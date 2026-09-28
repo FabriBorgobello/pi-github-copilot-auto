@@ -4,6 +4,7 @@
  */
 import { readFileSync } from "node:fs";
 import { AUTH_PATH, COPILOT_HEADERS, TOKEN_EXCHANGE_URL } from "./config.ts";
+import { redactResponseBody } from "./helpers.ts";
 import { StoredCopilotSchema, TokenExchangeSchema } from "./schemas.ts";
 
 function readStoredCopilot() {
@@ -66,7 +67,9 @@ export async function getCopilotToken(signal?: AbortSignal): Promise<string> {
 	});
 	if (!res.ok) {
 		throw new Error(
-			`Copilot Auto: token exchange failed ${res.status}: ${await res.text().catch(() => "")}`,
+			`Copilot Auto: token exchange failed ${res.status}: ${redactResponseBody(
+				await res.text().catch(() => ""),
+			)}`,
 		);
 	}
 	const parsed = TokenExchangeSchema.safeParse(await res.json());

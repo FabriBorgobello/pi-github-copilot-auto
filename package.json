@@ -5,6 +5,7 @@
 	"type": "module",
 	"packageManager": "pnpm@12.4.2",
 	"license": "MIT",
+	"author": "Fabricio Borgobello (https://github.com/FabriBorgobello)",
 	"repository": {
 		"type": "git",
 		"url": "https://github.com/FabriBorgobello/pi-github-copilot-auto.git"
@@ -24,7 +25,7 @@
 		"llm"
 	],
 	"scripts": {
-		"test": "node --experimental-strip-types test.ts",
+		"test": "node --test \"test/**/*.test.ts\"",
 		"lint": "biome lint .",
 		"format": "biome format --write .",
 		"check": "biome check .",

@@ -10,7 +10,7 @@ It reuses your existing `github-copilot` login from `~/.pi/agent/auth.json` and 
 pi install npm:pi-github-copilot-auto
 ```
 
-Restart Pi after installation.
+Run `/reload` in an active session to pick it up, or restart Pi.
 
 ## Use
 
@@ -50,12 +50,27 @@ Pi loads the extension from the package manifest in `package.json`:
 
 - `PI_COPILOT_AUTH` — override the auth file path. Default: `~/.pi/agent/auth.json`.
 
+## Development
+
+```bash
+pi -e ./        # load this checkout directly
+```
+
+Run `/reload` after editing the source in an active session.
+
 ## Tests
 
 ```bash
-node --experimental-strip-types test.ts
-npm run check
+pnpm test       # node --test over test/*.test.ts
+pnpm check      # biome lint + format
 ```
+
+The suite is network-free: `test/harness.ts` stubs `fetch` and redirects the
+auth and log paths to a temporary directory. It covers the pure helpers, the
+token exchange, the Auto session, the doctor report, and the streaming path
+(routing, header forwarding, abort, and malformed streams). Behaviour owned by
+Pi's built-in APIs this delegates to — tool calls, image input, Unicode
+boundaries, context overflow — is covered by pi-ai's own suites.
 
 ## Troubleshooting
 

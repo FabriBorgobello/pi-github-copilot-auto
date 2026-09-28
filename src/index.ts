@@ -9,32 +9,51 @@
  * ~/.pi/agent/auth.json (no second /login), refreshes the short-lived Copilot
  * token itself, then streams through Pi's matching built-in API.
  *
- * Usage: pi -e ~/pi-github-copilot-auto
+ * Install: pi install npm:pi-github-copilot-auto
+ * Local development: pi -e ./ (then /reload after editing this source)
  *
  */
 
-import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import type {
+	ExtensionAPI,
+	ExtensionContext,
+} from "@earendil-works/pi-coding-agent";
 import { AUTO_MODEL_ID, log, PROVIDER_ID } from "./config.ts";
 import { runDoctor } from "./doctor.ts";
 import { streamCopilotAuto } from "./stream.ts";
 
+const STATUS_KEY = "copilot-auto-route";
+
 export default function (pi: ExtensionAPI) {
-	let showRoute = (_model: string) => {};
+	// Held only between session_start and session_shutdown. Session replacement
+	// invalidates the old context, so it is dropped on shutdown rather than
+	// captured for the lifetime of the extension runtime.
+	let session: ExtensionContext | undefined;
+
+	// setStatus writes the interactive footer; RPC, JSON and print modes have no
+	// status bar, so the whole route indicator is guarded on mode === "tui".
+	const showRoute = (model: string) => {
+		if (session?.mode !== "tui") return;
+		session.ui.setStatus(
+			STATUS_KEY,
+			session.ui.theme.fg("muted", `auto (${model})`),
+		);
+	};
+	const clearRoute = () => {
+		if (session?.mode === "tui") session.ui.setStatus(STATUS_KEY, undefined);
+	};
 
 	pi.on("session_start", (_event, ctx) => {
-		showRoute = (model) => {
-			ctx.ui.setStatus(
-				"copilot-auto-route",
-				ctx.ui.theme.fg("muted", `auto (${model})`),
-			);
-		};
+		session = ctx;
 	});
-	pi.on("session_shutdown", (_event, ctx) => {
-		ctx.ui.setStatus("copilot-auto-route", undefined);
+	pi.on("session_shutdown", () => {
+		// Idempotent: cancellation, reload, session replacement and process exit
+		// can all converge here.
+		clearRoute();
+		session = undefined;
 	});
-	pi.on("model_select", (event, ctx) => {
-		if (event.model.provider !== PROVIDER_ID)
-			ctx.ui.setStatus("copilot-auto-route", undefined);
+	pi.on("model_select", (event) => {
+		if (event.model.provider !== PROVIDER_ID) clearRoute();
 	});
 
 	pi.registerCommand("copilot-auto-doctor", {
@@ -43,11 +62,14 @@ export default function (pi: ExtensionAPI) {
 			try {
 				const report = await runDoctor();
 				log(`doctor ok\n${report}`);
-				ctx.ui.notify(report, "info");
+				// notify reaches interactive and RPC clients; elsewhere the log file
+				// is the only channel.
+				if (ctx.hasUI) ctx.ui.notify(report, "info");
 			} catch (error) {
 				const message = error instanceof Error ? error.message : String(error);
 				log(`doctor failed: ${message}`);
-				ctx.ui.notify(`Copilot Auto doctor failed\n${message}`, "error");
+				if (ctx.hasUI)
+					ctx.ui.notify(`Copilot Auto doctor failed\n${message}`, "error");
 			}
 		},
 	});

@@ -16,3 +16,28 @@ export function pickAutoModel(
 ): string | undefined {
 	return availableModels.find((id) => completionModelIds.has(id));
 }
+
+/**
+ * Provider error bodies are echoed into user-visible error messages, and the
+ * token-exchange endpoint is exactly where a credential could appear in one.
+ * Redact known token shapes and cap the length before surfacing a body.
+ *
+ * Per docs/custom-provider.md: "Never write access tokens, refresh tokens,
+ * authorization headers, or complete provider responses to ordinary logs."
+ */
+const SECRET_JSON_FIELD =
+	/"(access_token|refresh_token|session_token|token|authorization)"(\s*:\s*)"[^"]*"/gi;
+const GITHUB_TOKEN = /\bgh[pousr]_[A-Za-z0-9]{16,}\b/g;
+const COPILOT_TOKEN = /\btid=[^\s"',]+/g;
+
+export function redactResponseBody(body: string, maxLength = 200): string {
+	const redacted = body
+		.replace(
+			SECRET_JSON_FIELD,
+			(_match, field, separator) => `"${field}"${separator}"[redacted]"`,
+		)
+		.replace(GITHUB_TOKEN, "[redacted]")
+		.replace(COPILOT_TOKEN, "tid=[redacted]");
+	if (redacted.length <= maxLength) return redacted;
+	return `${redacted.slice(0, maxLength)}... [truncated ${redacted.length - maxLength} chars]`;
+}

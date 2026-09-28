@@ -3,6 +3,7 @@
  * the model pool + the Copilot-Session-Token used for chat requests.
  */
 import { AUTO_MODEL_ID, COPILOT_HEADERS, log } from "./config.ts";
+import { redactResponseBody } from "./helpers.ts";
 import { AutoSessionSchema } from "./schemas.ts";
 
 export interface AutoSession {
@@ -35,7 +36,9 @@ export async function getAutoSession(
 	});
 	if (!res.ok) {
 		throw new Error(
-			`Copilot Auto: /models/session ${res.status}: ${await res.text().catch(() => "")}`,
+			`Copilot Auto: /models/session ${res.status}: ${redactResponseBody(
+				await res.text().catch(() => ""),
+			)}`,
 		);
 	}
 	const parsed = AutoSessionSchema.safeParse(await res.json());

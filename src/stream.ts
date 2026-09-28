@@ -106,9 +106,13 @@ export function streamCopilotAuto(
 			for await (const event of inner) stream.push(event);
 			stream.end();
 		} catch (error) {
+			// Mirror the built-in providers: a cancelled request is an aborted
+			// result, not an error. Cancellation during the token exchange or the
+			// Auto session open lands here, before a delegated stream exists.
+			const stopReason = options?.signal?.aborted ? "aborted" : "error";
 			stream.push({
 				type: "error",
-				reason: "error",
+				reason: stopReason,
 				error: {
 					role: "assistant",
 					content: [],
@@ -129,7 +133,7 @@ export function streamCopilotAuto(
 							total: 0,
 						},
 					},
-					stopReason: "error",
+					stopReason,
 					errorMessage: error instanceof Error ? error.message : String(error),
 					timestamp: Date.now(),
 				},
