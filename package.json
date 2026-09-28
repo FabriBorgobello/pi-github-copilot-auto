@@ -3,6 +3,7 @@
 	"version": "0.1.0",
 	"description": "Adds github-copilot-auto/auto to Pi using GitHub Copilot server-side Auto routing and session tokens.",
 	"type": "module",
+	"packageManager": "pnpm@12.4.2",
 	"license": "MIT",
 	"repository": {
 		"type": "git",
@@ -27,7 +28,8 @@
 		"lint": "biome lint .",
 		"format": "biome format --write .",
 		"check": "biome check .",
-		"prepare": "husky"
+		"prepare": "husky",
+		"release": "semantic-release"
 	},
 	"files": [
 		"src",
@@ -49,11 +51,16 @@
 	},
 	"devDependencies": {
 		"@biomejs/biome": "^2.5.14",
+		"@commitlint/cli": "^21.2.3",
+		"@commitlint/config-conventional": "^21.2.3",
 		"@earendil-works/pi-ai": "^0.87.1",
 		"@earendil-works/pi-coding-agent": "^0.87.1",
+		"@semantic-release/changelog": "^7.0.0",
+		"@semantic-release/git": "^11.0.1",
 		"@types/node": "^26.6.3",
 		"husky": "^9.1.7",
 		"lint-staged": "^17.6.0",
+		"semantic-release": "^25.0.9",
 		"typescript": "^7.0.2"
 	},
 	"dependencies": {
