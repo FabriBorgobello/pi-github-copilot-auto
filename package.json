@@ -1,0 +1,65 @@
+{
+	"name": "pi-github-copilot-auto",
+	"version": "0.1.0",
+	"description": "Adds github-copilot-auto/auto to Pi using GitHub Copilot server-side Auto routing and session tokens.",
+	"type": "module",
+	"license": "MIT",
+	"repository": {
+		"type": "git",
+		"url": "https://github.com/FabriBorgobello/pi-github-copilot-auto.git"
+	},
+	"homepage": "https://github.com/FabriBorgobello/pi-github-copilot-auto#readme",
+	"bugs": {
+		"url": "https://github.com/FabriBorgobello/pi-github-copilot-auto/issues"
+	},
+	"keywords": [
+		"pi-package",
+		"pi",
+		"pi-coding-agent",
+		"extension",
+		"github-copilot",
+		"copilot",
+		"auto-routing",
+		"llm"
+	],
+	"scripts": {
+		"test": "node --experimental-strip-types test.ts",
+		"lint": "biome lint .",
+		"format": "biome format --write .",
+		"check": "biome check .",
+		"prepare": "husky"
+	},
+	"files": [
+		"src",
+		"README.md",
+		"CHANGELOG.md",
+		"SECURITY.md",
+		"LICENSE",
+		"banner.png"
+	],
+	"pi": {
+		"image": "./banner.png",
+		"extensions": [
+			"./src/index.ts"
+		]
+	},
+	"peerDependencies": {
+		"@earendil-works/pi-ai": "*",
+		"@earendil-works/pi-coding-agent": "*"
+	},
+	"devDependencies": {
+		"@biomejs/biome": "^2.5.14",
+		"@earendil-works/pi-ai": "^0.87.1",
+		"@earendil-works/pi-coding-agent": "^0.87.1",
+		"@types/node": "^26.6.3",
+		"husky": "^9.1.7",
+		"lint-staged": "^17.6.0",
+		"typescript": "^7.0.2"
+	},
+	"dependencies": {
+		"zod": "^4.6.5"
+	},
+	"lint-staged": {
+		"*.{js,mjs,cjs,ts,mts,cts,json}": "biome check --write"
+	}
+}
