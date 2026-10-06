@@ -2,7 +2,8 @@
  * GitHub Copilot Auto — Pi provider extension
  *
  * Adds a single `github-copilot-auto/auto` model that uses
- * GitHub Copilot's server-side Auto routing. It forwards the
+ * GitHub Copilot's server-side Auto routing: the Auto session's model pool,
+ * the intent router's pick for the conversation, and the
  * `Copilot-Session-Token` returned by POST /models/session on chat requests.
  *
  * Reuses the existing `github-copilot` login: reads Pi's stored credential from
@@ -20,6 +21,7 @@ import type {
 } from "@earendil-works/pi-coding-agent";
 import { AUTO_MODEL_ID, log, PROVIDER_ID } from "./config.ts";
 import { runDoctor } from "./doctor.ts";
+import { AutoRouter, type RouteDecision } from "./router.ts";
 import { streamCopilotAuto } from "./stream.ts";
 
 const STATUS_KEY = "copilot-auto-route";
@@ -29,14 +31,20 @@ export default function (pi: ExtensionAPI) {
 	// invalidates the old context, so it is dropped on shutdown rather than
 	// captured for the lifetime of the extension runtime.
 	let session: ExtensionContext | undefined;
+	// Routing state is per conversation: reset with the session, invalidated
+	// after compaction so the next prompt is routed again.
+	const router = new AutoRouter();
 
 	// setStatus writes the interactive footer; RPC, JSON and print modes have no
 	// status bar, so the whole route indicator is guarded on mode === "tui".
-	const showRoute = (model: string) => {
+	const showRoute = (decision: RouteDecision) => {
 		if (session?.mode !== "tui") return;
 		session.ui.setStatus(
 			STATUS_KEY,
-			session.ui.theme.fg("muted", `auto (${model})`),
+			session.ui.theme.fg(
+				"muted",
+				`auto (${decision.model}, ${decision.source})`,
+			),
 		);
 	};
 	const clearRoute = () => {
@@ -45,12 +53,19 @@ export default function (pi: ExtensionAPI) {
 
 	pi.on("session_start", (_event, ctx) => {
 		session = ctx;
+		router.reset();
 	});
 	pi.on("session_shutdown", () => {
 		// Idempotent: cancellation, reload, session replacement and process exit
 		// can all converge here.
 		clearRoute();
+		router.reset();
 		session = undefined;
+	});
+	pi.on("session_compact", () => {
+		// VS Code re-routes after compaction (invalidateRouterCache); the
+		// summarised conversation may call for a different model.
+		router.invalidate();
 	});
 	pi.on("model_select", (event) => {
 		if (event.model.provider !== PROVIDER_ID) clearRoute();
@@ -60,7 +75,7 @@ export default function (pi: ExtensionAPI) {
 		description: "Check Copilot Auto auth, token exchange, and Auto routing",
 		handler: async (_args, ctx) => {
 			try {
-				const report = await runDoctor();
+				const report = await runDoctor(router);
 				log(`doctor ok\n${report}`);
 				// notify reaches interactive and RPC clients; elsewhere the log file
 				// is the only channel.
@@ -92,6 +107,6 @@ export default function (pi: ExtensionAPI) {
 			},
 		],
 		streamSimple: (m, context, options) =>
-			streamCopilotAuto(m, context, options, showRoute),
+			streamCopilotAuto(m, context, options, { router, onRoute: showRoute }),
 	});
 }

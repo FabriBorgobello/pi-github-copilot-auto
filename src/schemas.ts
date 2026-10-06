@@ -27,3 +27,18 @@ export const AutoSessionSchema = z.object({
 	discounted_costs: z.record(z.string(), z.number()).default({}),
 	expires_at: z.number().optional(), // seconds epoch
 });
+
+/**
+ * POST /models/session/intent — GitHub's intent router. Shape taken from
+ * RouterDecisionResponse in
+ * https://github.com/microsoft/vscode-copilot-chat/blob/main/src/platform/endpoint/node/routerDecisionFetcher.ts
+ * `latency_ms` and `scores` are ignored; `predicted_label` is kept as a free
+ * string so a new label does not invalidate the whole decision.
+ */
+export const RouterDecisionSchema = z.object({
+	predicted_label: z.string(),
+	confidence: z.number().optional(),
+	candidate_models: z.array(z.string()),
+	sticky_override: z.boolean().optional(),
+});
+export type RouterDecision = z.infer<typeof RouterDecisionSchema>;
