@@ -1,3 +1,10 @@
+# [0.2.0](https://github.com/FabriBorgobello/pi-github-copilot-auto/compare/v0.1.1...v0.2.0) (2026-10-06)
+
+
+### Features
+
+* support GitHub Enterprise Copilot logins ([6aedef8](https://github.com/FabriBorgobello/pi-github-copilot-auto/commit/6aedef839c5b12680e69282a26658910c2e92c05))
+
 ## [0.1.1](https://github.com/FabriBorgobello/pi-github-copilot-auto/compare/v0.1.0...v0.1.1) (2026-09-28)
 
 
