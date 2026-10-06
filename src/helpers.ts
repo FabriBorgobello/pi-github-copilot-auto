@@ -38,12 +38,15 @@ export function deriveApiBase(
 	return "https://api.individual.githubcopilot.com";
 }
 
-/** Pick the first Auto-pool model that Pi knows and that streams via openai-completions (GPT/Codex family). */
+/**
+ * Default route: the first Auto-pool model, in GitHub's pool order, that Pi
+ * knows and can stream here. Used when the intent router is skipped or fails.
+ */
 export function pickAutoModel(
 	availableModels: string[],
-	completionModelIds: Set<string>,
+	supportedModelIds: Set<string>,
 ): string | undefined {
-	return availableModels.find((id) => completionModelIds.has(id));
+	return availableModels.find((id) => supportedModelIds.has(id));
 }
 
 /**

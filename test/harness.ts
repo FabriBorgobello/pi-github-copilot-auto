@@ -47,9 +47,10 @@ export interface FetchStub {
 }
 
 /**
- * Replace global fetch. The stub reproduces the one behaviour the abort path
- * depends on: a fetch given an already-aborted signal rejects with an
- * AbortError rather than issuing a request.
+ * Replace global fetch. The stub reproduces the two behaviours the abort and
+ * timeout paths depend on: a fetch given an already-aborted signal rejects
+ * with an AbortError rather than issuing a request, and a pending fetch
+ * rejects with an AbortError as soon as its signal fires.
  */
 export function stubFetch(
 	handler: (call: StubbedCall) => Response | Promise<Response>,
@@ -72,9 +73,19 @@ export function stubFetch(
 			headers[key.toLowerCase()] = value;
 		const call: StubbedCall = { url, init, headers };
 		calls.push(call);
-		if (init?.signal?.aborted)
-			throw new DOMException("The operation was aborted.", "AbortError");
-		return handler(call);
+		const abortError = () =>
+			new DOMException("The operation was aborted.", "AbortError");
+		const signal = init?.signal;
+		if (signal?.aborted) throw abortError();
+		if (!signal) return handler(call);
+		return new Promise<Response>((resolve, reject) => {
+			signal.addEventListener("abort", () => reject(abortError()), {
+				once: true,
+			});
+			Promise.resolve()
+				.then(() => handler(call))
+				.then(resolve, reject);
+		});
 	}) as typeof globalThis.fetch;
 	return {
 		calls,
@@ -120,4 +131,9 @@ export const SAMPLE_GITHUB_TOKEN = "gho_16CharactersLongToken0000000000";
 export const SAMPLE_COPILOT_TOKEN =
 	"tid=deadbeefcafe;exp=1799999999;sku=copilot_individual;proxy-ep=proxy.individual.githubcopilot.com";
 export const SAMPLE_SESSION_TOKEN = "session-token-abcdef";
+
+/** A response that never arrives; pair it with a timeout or an abort. */
+export function pendingResponse(): Promise<Response> {
+	return new Promise<Response>(() => {});
+}
 export const EXPECTED_API_BASE = "https://api.individual.githubcopilot.com";
