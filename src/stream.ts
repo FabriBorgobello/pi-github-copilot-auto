@@ -14,9 +14,9 @@ import {
 	type SimpleStreamOptions,
 	type TranscriptContext,
 } from "@earendil-works/pi-ai/compat";
-import { getCopilotToken } from "./auth.ts";
+import { getCopilotAuth } from "./auth.ts";
 import { COPILOT_HEADERS, log } from "./config.ts";
-import { deriveApiBase, pickAutoModel } from "./helpers.ts";
+import { pickAutoModel } from "./helpers.ts";
 import {
 	supportedCopilotApiList,
 	supportedCopilotModels,
@@ -65,8 +65,8 @@ export function streamCopilotAuto(
 	(async () => {
 		try {
 			const signal = options?.signal;
-			const copilotToken = await getCopilotToken(signal);
-			const base = deriveApiBase(copilotToken);
+			const { token: copilotToken, apiBase: base } =
+				await getCopilotAuth(signal);
 			const session = await getAutoSession(base, copilotToken, signal);
 
 			const known = supportedCopilotModels();

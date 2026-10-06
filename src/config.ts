@@ -19,8 +19,6 @@ export const COPILOT_HEADERS: Record<string, string> = {
 	"X-GitHub-Api-Version": COPILOT_API_VERSION,
 };
 
-export const TOKEN_EXCHANGE_URL =
-	"https://api.github.com/copilot_internal/v2/token";
 export const AUTH_PATH =
 	process.env.PI_COPILOT_AUTH || join(homedir(), ".pi", "agent", "auth.json");
 const LOG_PATH = join(homedir(), ".pi", "agent", "copilot-auto.log");

@@ -9,8 +9,10 @@ import assert from "node:assert/strict";
 import { describe, test } from "node:test";
 import {
 	deriveApiBase,
+	normalizeEnterpriseDomain,
 	pickAutoModel,
 	redactResponseBody,
+	tokenExchangeUrl,
 } from "../src/helpers.ts";
 
 describe("deriveApiBase", () => {
@@ -41,6 +43,39 @@ describe("deriveApiBase", () => {
 		assert.equal(
 			deriveApiBase("proxy-ep=enterprise.githubcopilot.com"),
 			"https://enterprise.githubcopilot.com",
+		);
+	});
+});
+
+describe("GitHub Enterprise endpoints", () => {
+	test("normalises a stored enterprise URL or bare domain to a hostname", () => {
+		assert.equal(
+			normalizeEnterpriseDomain("https://ghe.example.com/path"),
+			"ghe.example.com",
+		);
+		assert.equal(
+			normalizeEnterpriseDomain(" ghe.example.com "),
+			"ghe.example.com",
+		);
+		assert.equal(normalizeEnterpriseDomain(""), undefined);
+		assert.equal(normalizeEnterpriseDomain(undefined), undefined);
+	});
+
+	test("exchanges tokens against api.<domain>, defaulting to github.com", () => {
+		assert.equal(
+			tokenExchangeUrl(),
+			"https://api.github.com/copilot_internal/v2/token",
+		);
+		assert.equal(
+			tokenExchangeUrl("ghe.example.com"),
+			"https://api.ghe.example.com/copilot_internal/v2/token",
+		);
+	});
+
+	test("falls back to copilot-api.<domain> when the token carries no proxy-ep", () => {
+		assert.equal(
+			deriveApiBase("no-proxy-here", "ghe.example.com"),
+			"https://copilot-api.ghe.example.com",
 		);
 	});
 });

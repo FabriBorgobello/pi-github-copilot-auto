@@ -3,8 +3,13 @@
  * exchanges/caches the short-lived Copilot token.
  */
 import { readFileSync } from "node:fs";
-import { AUTH_PATH, COPILOT_HEADERS, TOKEN_EXCHANGE_URL } from "./config.ts";
-import { redactResponseBody } from "./helpers.ts";
+import { AUTH_PATH, COPILOT_HEADERS } from "./config.ts";
+import {
+	deriveApiBase,
+	normalizeEnterpriseDomain,
+	redactResponseBody,
+	tokenExchangeUrl,
+} from "./helpers.ts";
 import { StoredCopilotSchema, TokenExchangeSchema } from "./schemas.ts";
 
 function readStoredCopilot() {
@@ -31,6 +36,7 @@ export interface StoredCopilotStatus {
 	hasAccessToken: boolean;
 	accessTokenExpiresAtMs: number | null;
 	hasRefreshToken: boolean;
+	enterpriseDomain: string | null;
 }
 
 export function getStoredCopilotStatus(): StoredCopilotStatus {
@@ -40,24 +46,42 @@ export function getStoredCopilotStatus(): StoredCopilotStatus {
 		hasAccessToken: Boolean(stored.access),
 		accessTokenExpiresAtMs: stored.expires ?? null,
 		hasRefreshToken: Boolean(stored.refresh),
+		enterpriseDomain: normalizeEnterpriseDomain(stored.enterpriseUrl) ?? null,
 	};
 }
 
-let cachedCopilotToken: { token: string; expires: number } | null = null;
+/** A Copilot token plus the API host it is valid for. */
+export interface CopilotAuth {
+	token: string;
+	apiBase: string;
+}
 
-export async function getCopilotToken(signal?: AbortSignal): Promise<string> {
+let cachedCopilotAuth: (CopilotAuth & { expires: number }) | null = null;
+
+export async function getCopilotAuth(
+	signal?: AbortSignal,
+): Promise<CopilotAuth> {
 	const now = Date.now();
-	if (cachedCopilotToken && cachedCopilotToken.expires > now)
-		return cachedCopilotToken.token;
+	if (cachedCopilotAuth && cachedCopilotAuth.expires > now)
+		return {
+			token: cachedCopilotAuth.token,
+			apiBase: cachedCopilotAuth.apiBase,
+		};
 
 	const stored = readStoredCopilot();
+	const enterpriseDomain = normalizeEnterpriseDomain(stored.enterpriseUrl);
 	// Reuse the still-valid stored Copilot token when present.
 	if (stored.access && stored.expires && stored.expires > now) {
-		cachedCopilotToken = { token: stored.access, expires: stored.expires };
-		return stored.access;
+		const apiBase = deriveApiBase(stored.access, enterpriseDomain);
+		cachedCopilotAuth = {
+			token: stored.access,
+			apiBase,
+			expires: stored.expires,
+		};
+		return { token: stored.access, apiBase };
 	}
 	// Otherwise exchange the GitHub token for a fresh Copilot token.
-	const res = await fetch(TOKEN_EXCHANGE_URL, {
+	const res = await fetch(tokenExchangeUrl(enterpriseDomain), {
 		headers: {
 			Accept: "application/json",
 			Authorization: `Bearer ${stored.refresh}`,
@@ -76,9 +100,12 @@ export async function getCopilotToken(signal?: AbortSignal): Promise<string> {
 	if (!parsed.success) {
 		throw new Error("Copilot Auto: invalid token exchange response");
 	}
-	cachedCopilotToken = {
-		token: parsed.data.token,
+	const { token } = parsed.data;
+	const apiBase = deriveApiBase(token, enterpriseDomain);
+	cachedCopilotAuth = {
+		token,
+		apiBase,
 		expires: parsed.data.expires_at * 1000 - 5 * 60 * 1000,
 	};
-	return parsed.data.token;
+	return { token, apiBase };
 }
