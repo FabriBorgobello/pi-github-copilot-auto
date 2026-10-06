@@ -10,6 +10,7 @@ export const StoredCopilotSchema = z.object({
 	refresh: z.string(), // GitHub OAuth token
 	access: z.string().optional(), // exchanged Copilot token (short-lived)
 	expires: z.number().optional(), // ms epoch
+	enterpriseUrl: z.string().optional(), // GitHub Enterprise host, absent for github.com
 });
 export type StoredCopilot = z.infer<typeof StoredCopilotSchema>;
 

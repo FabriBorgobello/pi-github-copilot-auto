@@ -1,13 +1,12 @@
 import { getBuiltinModels } from "@earendil-works/pi-ai/providers/all";
-import { getCopilotToken, getStoredCopilotStatus } from "./auth.ts";
-import { deriveApiBase, pickAutoModel } from "./helpers.ts";
+import { getCopilotAuth, getStoredCopilotStatus } from "./auth.ts";
+import { pickAutoModel } from "./helpers.ts";
 import { supportedCopilotModelIds } from "./model-support.ts";
 import { getAutoSession } from "./session.ts";
 
 export async function runDoctor(): Promise<string> {
 	const stored = getStoredCopilotStatus();
-	const token = await getCopilotToken();
-	const base = deriveApiBase(token);
+	const { token, apiBase: base } = await getCopilotAuth();
 	const session = await getAutoSession(base, token);
 	const supported = supportedCopilotModelIds();
 	const allKnown = getBuiltinModels("github-copilot");
@@ -27,6 +26,7 @@ export async function runDoctor(): Promise<string> {
 		`  File: ${stored.authPath}`,
 		`  Stored access token: ${yesNo(stored.hasAccessToken)}${stored.hasAccessToken ? ` (${expires})` : ""}`,
 		`  Stored refresh token: ${yesNo(stored.hasRefreshToken)}`,
+		`  GitHub host: ${stored.enterpriseDomain ?? "github.com"}`,
 		"",
 		"Routing",
 		`  API base: ${base}`,

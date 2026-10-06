@@ -25,16 +25,16 @@ import {
 
 // Must precede the import below: config.ts resolves AUTH_PATH at module init.
 const authPath = redirectAgentDir();
-const { getCopilotToken, getStoredCopilotStatus } = await import(
+const { getCopilotAuth, getStoredCopilotStatus } = await import(
 	"../src/auth.ts"
 );
 
 const TOKEN_EXCHANGE_URL = "https://api.github.com/copilot_internal/v2/token";
 
-describe("getCopilotToken", () => {
+describe("getCopilotAuth", () => {
 	test("reports a missing auth file with the path and the fix", async () => {
 		clearStoredCopilot(authPath);
-		await assert.rejects(getCopilotToken(), (error: Error) => {
+		await assert.rejects(getCopilotAuth(), (error: Error) => {
 			assert.match(error.message, /cannot read/);
 			assert.match(error.message, /Run \/login and pick GitHub Copilot/);
 			assert.ok(error.message.includes(authPath));
@@ -44,7 +44,7 @@ describe("getCopilotToken", () => {
 
 	test("reports an auth file with no github-copilot entry", async () => {
 		writeStoredCopilot(authPath, { something: "else" });
-		await assert.rejects(getCopilotToken(), {
+		await assert.rejects(getCopilotAuth(), {
 			message: /no github-copilot login found/,
 		});
 	});
@@ -53,7 +53,7 @@ describe("getCopilotToken", () => {
 		writeStoredCopilot(authPath, { refresh: SAMPLE_GITHUB_TOKEN });
 		const fetchStub = stubFetch(() => jsonResponse(uncacheableTokenPayload()));
 		try {
-			assert.equal(await getCopilotToken(), SAMPLE_COPILOT_TOKEN);
+			assert.equal((await getCopilotAuth()).token, SAMPLE_COPILOT_TOKEN);
 			assert.equal(fetchStub.calls.length, 1);
 			const [call] = fetchStub.calls;
 			assert.equal(call.url, TOKEN_EXCHANGE_URL);
@@ -74,7 +74,7 @@ describe("getCopilotToken", () => {
 		});
 		const fetchStub = stubFetch(() => jsonResponse(uncacheableTokenPayload()));
 		try {
-			assert.equal(await getCopilotToken(), SAMPLE_COPILOT_TOKEN);
+			assert.equal((await getCopilotAuth()).token, SAMPLE_COPILOT_TOKEN);
 			assert.equal(fetchStub.calls.length, 1);
 		} finally {
 			fetchStub.restore();
@@ -87,7 +87,7 @@ describe("getCopilotToken", () => {
 			textResponse(`{"token":"${SAMPLE_COPILOT_TOKEN}"}`, 401),
 		);
 		try {
-			await assert.rejects(getCopilotToken(), (error: Error) => {
+			await assert.rejects(getCopilotAuth(), (error: Error) => {
 				assert.match(error.message, /token exchange failed 401/);
 				assert.match(error.message, /"token":"\[redacted\]"/);
 				assert.ok(!error.message.includes("deadbeefcafe"));
@@ -102,7 +102,7 @@ describe("getCopilotToken", () => {
 		writeStoredCopilot(authPath, { refresh: SAMPLE_GITHUB_TOKEN });
 		const fetchStub = stubFetch(() => jsonResponse({ token: 42 }));
 		try {
-			await assert.rejects(getCopilotToken(), {
+			await assert.rejects(getCopilotAuth(), {
 				message: /invalid token exchange response/,
 			});
 		} finally {
@@ -116,9 +116,47 @@ describe("getCopilotToken", () => {
 		controller.abort();
 		const fetchStub = stubFetch(() => jsonResponse(uncacheableTokenPayload()));
 		try {
-			await assert.rejects(getCopilotToken(controller.signal), {
+			await assert.rejects(getCopilotAuth(controller.signal), {
 				name: "AbortError",
 			});
+		} finally {
+			fetchStub.restore();
+		}
+	});
+
+	test("exchanges against a GitHub Enterprise host and falls back to its Copilot API", async () => {
+		writeStoredCopilot(authPath, {
+			refresh: SAMPLE_GITHUB_TOKEN,
+			enterpriseUrl: "https://ghe.example.com/",
+		});
+		const fetchStub = stubFetch(() =>
+			jsonResponse(uncacheableTokenPayload("tid=enterprise;exp=1")),
+		);
+		try {
+			assert.deepEqual(await getCopilotAuth(), {
+				token: "tid=enterprise;exp=1",
+				apiBase: "https://copilot-api.ghe.example.com",
+			});
+			assert.equal(
+				fetchStub.calls[0].url,
+				"https://api.ghe.example.com/copilot_internal/v2/token",
+			);
+		} finally {
+			fetchStub.restore();
+		}
+	});
+
+	test("prefers the token's proxy endpoint over the enterprise fallback", async () => {
+		writeStoredCopilot(authPath, {
+			refresh: SAMPLE_GITHUB_TOKEN,
+			enterpriseUrl: "ghe.example.com",
+		});
+		const fetchStub = stubFetch(() => jsonResponse(uncacheableTokenPayload()));
+		try {
+			assert.equal(
+				(await getCopilotAuth()).apiBase,
+				"https://api.individual.githubcopilot.com",
+			);
 		} finally {
 			fetchStub.restore();
 		}
@@ -136,7 +174,7 @@ describe("getCopilotToken", () => {
 			throw new Error("token exchange should not have been attempted");
 		});
 		try {
-			assert.equal(await getCopilotToken(), "stored-copilot-token");
+			assert.equal((await getCopilotAuth()).token, "stored-copilot-token");
 			assert.equal(fetchStub.calls.length, 0);
 		} finally {
 			fetchStub.restore();
@@ -149,7 +187,7 @@ describe("getCopilotToken", () => {
 			throw new Error("token exchange should not have been attempted");
 		});
 		try {
-			assert.equal(await getCopilotToken(), "stored-copilot-token");
+			assert.equal((await getCopilotAuth()).token, "stored-copilot-token");
 			assert.equal(fetchStub.calls.length, 0);
 		} finally {
 			fetchStub.restore();
@@ -173,8 +211,17 @@ describe("getStoredCopilotStatus", () => {
 			hasAccessToken: true,
 			accessTokenExpiresAtMs: expires,
 			hasRefreshToken: true,
+			enterpriseDomain: null,
 		});
 		assert.ok(!JSON.stringify(status).includes(SAMPLE_GITHUB_TOKEN));
+	});
+
+	test("reports the normalised GitHub Enterprise domain", () => {
+		writeStoredCopilot(authPath, {
+			refresh: SAMPLE_GITHUB_TOKEN,
+			enterpriseUrl: "https://ghe.example.com/",
+		});
+		assert.equal(getStoredCopilotStatus().enterpriseDomain, "ghe.example.com");
 	});
 
 	test("reports a refresh-only credential as having no access token", () => {
@@ -184,6 +231,7 @@ describe("getStoredCopilotStatus", () => {
 			hasAccessToken: false,
 			accessTokenExpiresAtMs: null,
 			hasRefreshToken: true,
+			enterpriseDomain: null,
 		});
 	});
 });

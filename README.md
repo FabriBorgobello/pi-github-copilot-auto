@@ -31,7 +31,7 @@ Pi loads the extension from the package manifest in `package.json`:
 ## What it does
 
 - Reads Pi's stored `github-copilot` credential.
-- Exchanges the GitHub token for a short-lived Copilot token.
+- Exchanges the GitHub token for a short-lived Copilot token, against your GitHub Enterprise host when you logged in with one.
 - Opens a `/models/session` Auto pool.
 - Picks the first supported model Pi already knows.
 - Streams through Pi's matching built-in provider with the session token attached.
@@ -76,6 +76,7 @@ boundaries, context overflow — is covered by pi-ai's own suites.
 
 - **No `github-copilot` login found**: run `/login` and pick GitHub Copilot.
 - **Auth file unreadable**: check `PI_COPILOT_AUTH` or `~/.pi/agent/auth.json`.
+- **GitHub Enterprise**: the host comes from the `enterpriseUrl` Pi stores at `/login`; `/copilot-auto-doctor` shows it under "GitHub host".
 - **`/models/session` fails**: GitHub may have changed the Copilot base URL, headers, or payload.
 - **No matching model in pool**: the Auto pool returned model IDs Pi doesn't know yet.
 - **Cost display looks wrong**: Auto routing is opaque, so the provider is intentionally reported as zero-cost.
