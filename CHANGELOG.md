@@ -1,3 +1,10 @@
+# [0.4.0](https://github.com/FabriBorgobello/pi-github-copilot-auto/compare/v0.3.0...v0.4.0) (2026-11-02)
+
+
+### Features
+
+* register Copilot Auto as a Pi virtual model ([f596c73](https://github.com/FabriBorgobello/pi-github-copilot-auto/commit/f596c73b97ae26ddcd523902abe8f64030d85b3d))
+
 # [0.3.0](https://github.com/FabriBorgobello/pi-github-copilot-auto/compare/v0.2.0...v0.3.0) (2026-10-06)
 
 
