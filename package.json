@@ -1,6 +1,6 @@
 {
 	"name": "pi-github-copilot-auto",
-	"version": "0.4.0",
+	"version": "0.4.1",
 	"description": "Adds a github-copilot-auto/auto virtual model to Pi using GitHub Copilot server-side Auto routing and session tokens.",
 	"type": "module",
 	"packageManager": "pnpm@12.4.2",

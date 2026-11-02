@@ -1,3 +1,10 @@
+## [0.4.1](https://github.com/FabriBorgobello/pi-github-copilot-auto/compare/v0.4.0...v0.4.1) (2026-11-02)
+
+
+### Bug Fixes
+
+* drop the route status that duplicates Pi's footer ([f8027e3](https://github.com/FabriBorgobello/pi-github-copilot-auto/commit/f8027e3825ed0b5edd038f69332c6bb7616c8c91))
+
 # [0.4.0](https://github.com/FabriBorgobello/pi-github-copilot-auto/compare/v0.3.0...v0.4.0) (2026-11-02)
 
 
