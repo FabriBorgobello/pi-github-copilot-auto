@@ -2,37 +2,27 @@
  * Shared fixtures for the Copilot Auto tests.
  *
  * `redirectAgentDir()` must run before any `src/` module is imported, because
- * config.ts resolves AUTH_PATH and LOG_PATH once at module init. Test files
- * therefore call it at top level and then `await import()` the module under
- * test, rather than importing it statically.
+ * config.ts resolves LOG_PATH once at module init. Test files therefore call
+ * it at top level and then `await import()` the module under test, rather
+ * than importing it statically.
  */
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 /**
- * Point the extension's auth file and log file at a scratch directory so tests
- * never read the developer's real credential or append to their real log.
+ * Point HOME, and with it the extension's log file and Pi's agent directory,
+ * at a scratch directory so tests never touch the developer's real files.
+ * Returns the scratch home.
  */
 export function redirectAgentDir(): string {
 	const home = mkdtempSync(join(tmpdir(), "copilot-auto-test-"));
 	mkdirSync(join(home, ".pi", "agent"), { recursive: true });
 	process.env.HOME = home;
 	process.env.USERPROFILE = home;
-	const authPath = join(home, ".pi", "agent", "auth.json");
-	process.env.PI_COPILOT_AUTH = authPath;
+	process.env.PI_CODING_AGENT_DIR = join(home, ".pi", "agent");
 	process.on("exit", () => rmSync(home, { recursive: true, force: true }));
-	return authPath;
-}
-
-/** Write the `github-copilot` entry Pi would have stored after /login. */
-export function writeStoredCopilot(authPath: string, entry: unknown): void {
-	writeFileSync(authPath, JSON.stringify({ "github-copilot": entry }), "utf8");
-}
-
-/** Remove the auth file entirely, as if the user had never run /login. */
-export function clearStoredCopilot(authPath: string): void {
-	rmSync(authPath, { force: true });
+	return home;
 }
 
 export interface StubbedCall {
@@ -106,16 +96,14 @@ export function textResponse(body: string, status = 500): Response {
 	return new Response(body, { status });
 }
 
-const NOW_SECONDS = () => Math.floor(Date.now() / 1000);
-
-/**
- * A token-exchange payload whose expiry is too near to be cached. Most tests
- * want every call to re-fetch, so a warm module-level cache cannot silently
- * satisfy an assertion about request count.
- */
-export function uncacheableTokenPayload(token = SAMPLE_COPILOT_TOKEN) {
-	return { token, expires_at: NOW_SECONDS() };
+export function sseResponse(body: string): Response {
+	return new Response(body, {
+		status: 200,
+		headers: { "content-type": "text/event-stream" },
+	});
 }
+
+const NOW_SECONDS = () => Math.floor(Date.now() / 1000);
 
 /** An Auto session payload too near expiry to be cached. */
 export function uncacheableSessionPayload(availableModels: string[]) {
@@ -127,7 +115,6 @@ export function uncacheableSessionPayload(availableModels: string[]) {
 	};
 }
 
-export const SAMPLE_GITHUB_TOKEN = "gho_16CharactersLongToken0000000000";
 export const SAMPLE_COPILOT_TOKEN =
 	"tid=deadbeefcafe;exp=1799999999;sku=copilot_individual;proxy-ep=proxy.individual.githubcopilot.com";
 export const SAMPLE_SESSION_TOKEN = "session-token-abcdef";
@@ -137,3 +124,24 @@ export function pendingResponse(): Promise<Response> {
 	return new Promise<Response>(() => {});
 }
 export const EXPECTED_API_BASE = "https://api.individual.githubcopilot.com";
+
+/**
+ * A model registry holding Pi's github-copilot catalog, with or without a
+ * login. Only the two methods the extension calls are implemented.
+ */
+export async function fakeRegistry(
+	options: { login?: boolean; baseUrl?: string } = {},
+) {
+	const { getBuiltinModels } = await import(
+		"@earendil-works/pi-ai/providers/all"
+	);
+	const { login = true, baseUrl = EXPECTED_API_BASE } = options;
+	const models = getBuiltinModels("github-copilot");
+	return {
+		getAvailable: () => (login ? models : []),
+		getApiKeyAndHeaders: async () =>
+			login
+				? { ok: true as const, apiKey: SAMPLE_COPILOT_TOKEN, baseUrl }
+				: { ok: false as const, error: "No API key found." },
+	};
+}

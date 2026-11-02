@@ -3,13 +3,16 @@
  *
  * The request/response shape asserted here is the one microsoft/vscode-copilot-chat
  * sends and reads (routerDecisionFetcher.ts); the selection rules are the
- * handoff's: never a model outside the pool, never one Pi cannot stream.
+ * handoff's: never a model outside the pool, never one outside Pi's
+ * github-copilot catalog. AutoRouter.resolve adds the cadence: route once per
+ * conversation, keep the route in Pi's router state, re-route after compaction.
  */
 import assert from "node:assert/strict";
 import { describe, test } from "node:test";
 import type { Message } from "@earendil-works/pi-ai/compat";
 import {
 	EXPECTED_API_BASE,
+	fakeRegistry,
 	jsonResponse,
 	pendingResponse,
 	redirectAgentDir,
@@ -22,11 +25,14 @@ import {
 // Must precede the imports below: config.ts resolves its paths at module init.
 redirectAgentDir();
 const {
+	AutoRouter,
 	describeRouteDecision,
 	fetchRouterDecision,
 	pickRoutedModel,
 	routingPrompt,
 } = await import("../src/router.ts");
+const { copilotModels } = await import("../src/auth.ts");
+type ResolveRouteInput = import("../src/router.ts").ResolveRouteInput;
 
 const user = (content: unknown) =>
 	({ role: "user", content, timestamp: 1 }) as Message;
@@ -99,7 +105,7 @@ describe("pickRoutedModel", () => {
 		assert.equal(pickRoutedModel(["a"], ["b"], supported), undefined);
 	});
 
-	test("never picks a pooled model Pi cannot stream", () => {
+	test("never picks a pooled model missing from Pi's catalog", () => {
 		assert.equal(
 			pickRoutedModel(["unknown"], ["unknown"], supported),
 			undefined,
@@ -264,5 +270,260 @@ describe("fetchRouterDecision", () => {
 		} finally {
 			fetchStub.restore();
 		}
+	});
+});
+
+const known = copilotModels(await fakeRegistry());
+
+describe("AutoRouter.resolve", () => {
+	// Discovered from Pi's catalog rather than hardcoded, so a retired id cannot
+	// silently turn these into default-route tests.
+	const ids = [...known.keys()];
+	const [first, second, third] = ids;
+
+	function input(
+		overrides: Partial<ResolveRouteInput> = {},
+	): ResolveRouteInput {
+		return {
+			base: EXPECTED_API_BASE,
+			copilotToken: SAMPLE_COPILOT_TOKEN,
+			session: {
+				sessionToken: SAMPLE_SESSION_TOKEN,
+				availableModels: [first, second, third],
+				discountedCosts: {},
+				expiresAtMs: Date.now() + 60_000,
+			},
+			messages: [user("refactor this module")],
+			known,
+			reason: "user",
+			...overrides,
+		};
+	}
+	const pool = (availableModels: string[]) => ({
+		...input().session,
+		availableModels,
+	});
+	const decision = (candidates: string[]) =>
+		jsonResponse({
+			predicted_label: "needs_reasoning",
+			confidence: 0.87,
+			candidate_models: candidates,
+		});
+
+	test("follows the router's ranking instead of pool order", async () => {
+		const fetchStub = stubFetch(() => decision([third, first]));
+		try {
+			const route = await new AutoRouter().resolve(input());
+			assert.equal(route?.model, third);
+			assert.equal(route?.decision?.source, "router");
+			assert.equal(route?.state?.decision.model, third);
+			assert.ok(route?.state?.conversationId);
+		} finally {
+			fetchStub.restore();
+		}
+	});
+
+	test("skips candidates outside the pool or missing from Pi's catalog", async () => {
+		const fetchStub = stubFetch(() =>
+			decision(["not-in-catalog", ids[5], second]),
+		);
+		try {
+			const route = await new AutoRouter().resolve(input());
+			assert.equal(route?.model, second);
+		} finally {
+			fetchStub.restore();
+		}
+	});
+
+	for (const [name, respond, reason] of [
+		["fails", () => textResponse("not enabled", 404), "router_error"],
+		[
+			"answers with an unusable payload",
+			() => jsonResponse({ nope: 1 }),
+			"router_invalid_payload",
+		],
+		[
+			"offers no usable candidate",
+			() => decision(["not-in-catalog"]),
+			"no_usable_candidate",
+		],
+	] as const)
+		test(`falls back to the first pool model when the router ${name}`, async () => {
+			const fetchStub = stubFetch(respond);
+			try {
+				const route = await new AutoRouter().resolve(input());
+				assert.equal(route?.model, first);
+				assert.equal(route?.decision?.source, "default");
+				assert.equal(
+					route?.decision?.source === "default" && route.decision.reason,
+					reason,
+				);
+			} finally {
+				fetchStub.restore();
+			}
+		});
+
+	test("falls back when the router does not answer in time", async () => {
+		const fetchStub = stubFetch(() => pendingResponse());
+		try {
+			const route = await new AutoRouter({ timeoutMs: 10 }).resolve(input());
+			assert.equal(route?.model, first);
+			assert.ok(
+				route?.decision?.source === "default" &&
+					route.decision.reason === "router_timeout",
+			);
+		} finally {
+			fetchStub.restore();
+		}
+	});
+
+	test("propagates cancellation during routing instead of falling back", async () => {
+		const fetchStub = stubFetch(() => pendingResponse());
+		const controller = new AbortController();
+		try {
+			const pending = new AutoRouter().resolve(
+				input({ signal: controller.signal }),
+			);
+			controller.abort();
+			await assert.rejects(pending, { name: "AbortError" });
+		} finally {
+			fetchStub.restore();
+		}
+	});
+
+	test("keeps a stored route without asking the router again", async () => {
+		const fetchStub = stubFetch(() => decision([third]));
+		try {
+			const router = new AutoRouter();
+			const routed = await router.resolve(input());
+			for (const reason of ["user", "continuation", "retry"] as const) {
+				const again = await router.resolve(
+					input({ reason, state: routed?.state }),
+				);
+				assert.equal(again?.model, third);
+				// The same object tells Pi the state did not change.
+				assert.equal(again?.state, routed?.state);
+			}
+			assert.equal(fetchStub.calls.length, 1);
+		} finally {
+			fetchStub.restore();
+		}
+	});
+
+	test("routes the next user prompt again after invalidation, in the same conversation", async () => {
+		const fetchStub = stubFetch(() => decision([third]));
+		try {
+			const router = new AutoRouter();
+			const routed = await router.resolve(input());
+			router.invalidate();
+			// Tool-call steps of the current turn keep the route.
+			await router.resolve(
+				input({ reason: "continuation", state: routed?.state }),
+			);
+			assert.equal(fetchStub.calls.length, 1);
+
+			const rerouted = await router.resolve(
+				input({ reason: "user", state: routed?.state }),
+			);
+			assert.equal(fetchStub.calls.length, 2);
+			assert.notEqual(rerouted?.state, routed?.state);
+			assert.equal(
+				rerouted?.state?.conversationId,
+				routed?.state?.conversationId,
+			);
+			const body = JSON.parse(String(fetchStub.calls[1].init?.body));
+			assert.equal(body.previous_model, third);
+			assert.equal(body.session_id, routed?.state?.conversationId);
+
+			// The request is consumed: the following prompt sticks again.
+			await router.resolve(input({ state: rerouted?.state }));
+			assert.equal(fetchStub.calls.length, 2);
+		} finally {
+			fetchStub.restore();
+		}
+	});
+
+	test("routes again when the stored model left the pool", async () => {
+		const fetchStub = stubFetch(() => decision([second]));
+		try {
+			const state = {
+				conversationId: "conversation-1",
+				decision: { source: "default", model: first, reason: "router_error" },
+			} as const;
+			const moved = await new AutoRouter().resolve(
+				input({
+					reason: "continuation",
+					state,
+					session: pool([third, second]),
+				}),
+			);
+			assert.equal(moved?.model, second);
+			assert.equal(moved?.state?.conversationId, state.conversationId);
+			assert.equal(fetchStub.calls.length, 1);
+		} finally {
+			fetchStub.restore();
+		}
+	});
+
+	test("serves direct requests from the last responder without routing or state", async () => {
+		const fetchStub = stubFetch(() => decision([third]));
+		try {
+			const router = new AutoRouter();
+			const direct = await router.resolve(
+				input({ reason: "direct", previousModel: second }),
+			);
+			assert.deepEqual(direct, { model: second });
+
+			const fallback = await router.resolve(
+				input({ reason: "direct", previousModel: "not-in-pool" }),
+			);
+			assert.deepEqual(fallback, { model: first });
+			assert.equal(fetchStub.calls.length, 0);
+		} finally {
+			fetchStub.restore();
+		}
+	});
+
+	test("uses a vision-capable default for image prompts without consulting the router", async () => {
+		// Every catalog model takes images today, so add a text-only one.
+		const vision = first;
+		const textOnly = "text-only-model";
+		const base = known.get(first);
+		assert.ok(base);
+		const withTextOnly = new Map(known).set(textOnly, {
+			...base,
+			id: textOnly,
+			input: ["text"],
+		});
+		const fetchStub = stubFetch(() => decision([textOnly]));
+		try {
+			const route = await new AutoRouter().resolve(
+				input({
+					known: withTextOnly,
+					session: pool([textOnly, vision]),
+					messages: [
+						user([
+							{ type: "text", text: "what is this?" },
+							{ type: "image", data: "AAAA", mimeType: "image/png" },
+						]),
+					],
+				}),
+			);
+			assert.equal(route?.model, vision);
+			assert.ok(
+				route?.decision?.source === "default" &&
+					route.decision.reason === "image_prompt",
+			);
+			assert.equal(fetchStub.calls.length, 0);
+		} finally {
+			fetchStub.restore();
+		}
+	});
+
+	test("returns undefined when nothing in the pool is in Pi's catalog", async () => {
+		const route = await new AutoRouter().resolve(
+			input({ session: pool(["not-in-catalog"]) }),
+		);
+		assert.equal(route, undefined);
 	});
 });

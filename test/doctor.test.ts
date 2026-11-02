@@ -8,67 +8,55 @@ import assert from "node:assert/strict";
 import { describe, test } from "node:test";
 import {
 	EXPECTED_API_BASE,
+	fakeRegistry,
 	jsonResponse,
 	redirectAgentDir,
 	SAMPLE_COPILOT_TOKEN,
-	SAMPLE_GITHUB_TOKEN,
 	SAMPLE_SESSION_TOKEN,
 	type StubbedCall,
 	stubFetch,
+	textResponse,
 	uncacheableSessionPayload,
-	uncacheableTokenPayload,
-	writeStoredCopilot,
 } from "./harness.ts";
 
-// Must precede the imports below: config.ts resolves its paths at module init.
-const authPath = redirectAgentDir();
+// Must precede the imports below: config.ts resolves its log path at module init.
+redirectAgentDir();
 const { runDoctor } = await import("../src/doctor.ts");
-const { supportedCopilotModels } = await import("../src/model-support.ts");
+const { copilotModels } = await import("../src/auth.ts");
 const { AutoRouter } = await import("../src/router.ts");
 
 describe("runDoctor", () => {
 	test("reports the resolved route without printing any credential", async () => {
-		const known = [...supportedCopilotModels().keys()];
-		assert.ok(known.length > 0, "Pi's github-copilot catalog is empty");
-		const [target] = known;
+		const registry = await fakeRegistry();
+		const [target] = copilotModels(registry).keys();
+		assert.ok(target, "Pi's github-copilot catalog is empty");
 
-		writeStoredCopilot(authPath, { refresh: SAMPLE_GITHUB_TOKEN });
-		const fetchStub = stubFetch((call: StubbedCall) =>
-			call.url.includes("copilot_internal")
-				? jsonResponse(uncacheableTokenPayload())
-				: jsonResponse(uncacheableSessionPayload([target, "unknown-model"])),
+		const fetchStub = stubFetch(() =>
+			jsonResponse(uncacheableSessionPayload([target, "unknown-model"])),
 		);
 		try {
-			const report = await runDoctor();
+			const report = await runDoctor(registry);
 
 			assert.match(report, /^Copilot Auto doctor$/m);
-			assert.ok(report.includes(`File: ${authPath}`));
 			assert.ok(report.includes(`API base: ${EXPECTED_API_BASE}`));
 			assert.ok(
 				report.includes(
-					`Default route (first supported pool model): ${target}`,
+					`Default route (first available pool model): ${target}`,
 				),
 			);
 			assert.ok(report.includes("Auto pool returned by GitHub: 2"));
-			assert.ok(report.includes("Pi-supported matches in pool: 1"));
+			assert.ok(report.includes("Pi-available matches in pool: 1"));
 			assert.ok(
 				report.includes(
 					`Router endpoint: ${EXPECTED_API_BASE}/models/session/intent`,
 				),
 			);
 			assert.match(report, /Last router outcome: none yet/);
-			// Doctor never routes a prompt: token exchange + session only.
-			assert.equal(fetchStub.calls.length, 2);
-			assert.ok(
-				fetchStub.calls.every((call) => !call.url.endsWith("/intent")),
-				"the doctor made a router request",
-			);
+			// Doctor never routes a prompt: the session open only.
+			assert.equal(fetchStub.calls.length, 1);
+			assert.ok(fetchStub.calls[0].url.endsWith("/models/session"));
 
-			for (const secret of [
-				SAMPLE_GITHUB_TOKEN,
-				SAMPLE_COPILOT_TOKEN,
-				SAMPLE_SESSION_TOKEN,
-			])
+			for (const secret of [SAMPLE_COPILOT_TOKEN, SAMPLE_SESSION_TOKEN])
 				assert.ok(
 					!report.includes(secret),
 					`the doctor report leaked ${secret}`,
@@ -79,19 +67,19 @@ describe("runDoctor", () => {
 	});
 
 	test("reports the last router outcome held in memory, without a new request", async () => {
-		const known = supportedCopilotModels();
+		const registry = await fakeRegistry();
+		const known = copilotModels(registry);
 		const [target] = known.keys();
-		writeStoredCopilot(authPath, { refresh: SAMPLE_GITHUB_TOKEN });
 		const fetchStub = stubFetch((call: StubbedCall) => {
-			if (call.url.includes("copilot_internal"))
-				return jsonResponse(uncacheableTokenPayload());
 			if (call.url.endsWith("/models/session/intent"))
 				return jsonResponse({
 					predicted_label: "needs_reasoning",
 					confidence: 0.9,
 					candidate_models: [target],
 				});
-			return jsonResponse(uncacheableSessionPayload([target]));
+			if (call.url.endsWith("/models/session"))
+				return jsonResponse(uncacheableSessionPayload([target]));
+			return textResponse("unexpected", 404);
 		});
 		try {
 			// A routed request earlier in the process leaves its decision behind.
@@ -107,10 +95,11 @@ describe("runDoctor", () => {
 				},
 				messages: [{ role: "user", content: "hi", timestamp: Date.now() }],
 				known,
+				reason: "user",
 			});
 			const routerCalls = fetchStub.calls.length;
 
-			const report = await runDoctor(router);
+			const report = await runDoctor(registry, router);
 
 			assert.ok(
 				report.includes(
@@ -118,8 +107,8 @@ describe("runDoctor", () => {
 				),
 				report,
 			);
-			// Token exchange + session open only; the doctor itself never routes.
-			assert.equal(fetchStub.calls.length - routerCalls, 2);
+			// Session open only; the doctor itself never routes.
+			assert.equal(fetchStub.calls.length - routerCalls, 1);
 			assert.ok(!report.includes(SAMPLE_SESSION_TOKEN));
 		} finally {
 			fetchStub.restore();
@@ -127,9 +116,8 @@ describe("runDoctor", () => {
 	});
 
 	test("fails with an actionable message when there is no login", async () => {
-		writeStoredCopilot(authPath, {});
-		await assert.rejects(runDoctor(), {
-			message: /no github-copilot login found/,
+		await assert.rejects(runDoctor(await fakeRegistry({ login: false })), {
+			message: /no GitHub Copilot login found\. Run \/login/,
 		});
 	});
 });

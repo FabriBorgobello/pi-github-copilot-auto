@@ -1,54 +1,19 @@
 /**
- * Copilot token lifecycle: reads Pi's stored github-copilot credential and
- * exchanges/caches the short-lived Copilot token.
+ * Copilot credentials, borrowed from Pi's built-in github-copilot provider.
+ *
+ * Pi owns the login, the token refresh and the GitHub Enterprise host: asking
+ * the model registry for a github-copilot model's request auth returns the
+ * current Copilot token and the API base derived from it.
  */
-import { readFileSync } from "node:fs";
-import { AUTH_PATH, COPILOT_HEADERS } from "./config.ts";
-import {
-	deriveApiBase,
-	normalizeEnterpriseDomain,
-	redactResponseBody,
-	tokenExchangeUrl,
-} from "./helpers.ts";
-import { StoredCopilotSchema, TokenExchangeSchema } from "./schemas.ts";
+import type { Api, Model } from "@earendil-works/pi-ai/compat";
+import type { ModelRegistry } from "@earendil-works/pi-coding-agent";
+import { COPILOT_PROVIDER_ID } from "./config.ts";
 
-function readStoredCopilot() {
-	let raw: string;
-	try {
-		raw = readFileSync(AUTH_PATH, "utf8");
-	} catch {
-		throw new Error(
-			`Copilot Auto: cannot read ${AUTH_PATH}. Run /login and pick GitHub Copilot first.`,
-		);
-	}
-	const entry = (JSON.parse(raw) as Record<string, unknown>)["github-copilot"];
-	const parsed = StoredCopilotSchema.safeParse(entry);
-	if (!parsed.success) {
-		throw new Error(
-			"Copilot Auto: no github-copilot login found. Run /login and pick GitHub Copilot.",
-		);
-	}
-	return parsed.data;
-}
-
-export interface StoredCopilotStatus {
-	authPath: string;
-	hasAccessToken: boolean;
-	accessTokenExpiresAtMs: number | null;
-	hasRefreshToken: boolean;
-	enterpriseDomain: string | null;
-}
-
-export function getStoredCopilotStatus(): StoredCopilotStatus {
-	const stored = readStoredCopilot();
-	return {
-		authPath: AUTH_PATH,
-		hasAccessToken: Boolean(stored.access),
-		accessTokenExpiresAtMs: stored.expires ?? null,
-		hasRefreshToken: Boolean(stored.refresh),
-		enterpriseDomain: normalizeEnterpriseDomain(stored.enterpriseUrl) ?? null,
-	};
-}
+/** The registry surface this extension uses; narrow so tests can fake it. */
+export type CopilotRegistry = Pick<
+	ModelRegistry,
+	"getAvailable" | "getApiKeyAndHeaders"
+>;
 
 /** A Copilot token plus the API host it is valid for. */
 export interface CopilotAuth {
@@ -56,56 +21,30 @@ export interface CopilotAuth {
 	apiBase: string;
 }
 
-let cachedCopilotAuth: (CopilotAuth & { expires: number }) | null = null;
+const LOGIN_HINT = "Run /login and pick GitHub Copilot.";
+
+/** Pi's github-copilot models that the current login can use, by id. */
+export function copilotModels(
+	registry: CopilotRegistry,
+): Map<string, Model<Api>> {
+	const models = new Map<string, Model<Api>>();
+	for (const model of registry.getAvailable())
+		if (model.provider === COPILOT_PROVIDER_ID) models.set(model.id, model);
+	return models;
+}
 
 export async function getCopilotAuth(
-	signal?: AbortSignal,
+	registry: CopilotRegistry,
 ): Promise<CopilotAuth> {
-	const now = Date.now();
-	if (cachedCopilotAuth && cachedCopilotAuth.expires > now)
-		return {
-			token: cachedCopilotAuth.token,
-			apiBase: cachedCopilotAuth.apiBase,
-		};
-
-	const stored = readStoredCopilot();
-	const enterpriseDomain = normalizeEnterpriseDomain(stored.enterpriseUrl);
-	// Reuse the still-valid stored Copilot token when present.
-	if (stored.access && stored.expires && stored.expires > now) {
-		const apiBase = deriveApiBase(stored.access, enterpriseDomain);
-		cachedCopilotAuth = {
-			token: stored.access,
-			apiBase,
-			expires: stored.expires,
-		};
-		return { token: stored.access, apiBase };
-	}
-	// Otherwise exchange the GitHub token for a fresh Copilot token.
-	const res = await fetch(tokenExchangeUrl(enterpriseDomain), {
-		headers: {
-			Accept: "application/json",
-			Authorization: `Bearer ${stored.refresh}`,
-			...COPILOT_HEADERS,
-		},
-		signal,
-	});
-	if (!res.ok) {
+	// Request auth is per provider; any of its models resolves the same token.
+	const [model] = copilotModels(registry).values();
+	if (!model)
 		throw new Error(
-			`Copilot Auto: token exchange failed ${res.status}: ${redactResponseBody(
-				await res.text().catch(() => ""),
-			)}`,
+			`Copilot Auto: no GitHub Copilot login found. ${LOGIN_HINT}`,
 		);
-	}
-	const parsed = TokenExchangeSchema.safeParse(await res.json());
-	if (!parsed.success) {
-		throw new Error("Copilot Auto: invalid token exchange response");
-	}
-	const { token } = parsed.data;
-	const apiBase = deriveApiBase(token, enterpriseDomain);
-	cachedCopilotAuth = {
-		token,
-		apiBase,
-		expires: parsed.data.expires_at * 1000 - 5 * 60 * 1000,
-	};
-	return { token, apiBase };
+	const auth = await registry.getApiKeyAndHeaders(model);
+	if (!auth.ok) throw new Error(`Copilot Auto: ${auth.error} ${LOGIN_HINT}`);
+	if (!auth.apiKey)
+		throw new Error(`Copilot Auto: GitHub Copilot has no token. ${LOGIN_HINT}`);
+	return { token: auth.apiKey, apiBase: auth.baseUrl ?? model.baseUrl };
 }

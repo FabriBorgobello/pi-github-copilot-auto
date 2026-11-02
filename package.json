@@ -1,7 +1,7 @@
 {
 	"name": "pi-github-copilot-auto",
 	"version": "0.3.0",
-	"description": "Adds github-copilot-auto/auto to Pi using GitHub Copilot server-side Auto routing and session tokens.",
+	"description": "Adds a github-copilot-auto/auto virtual model to Pi using GitHub Copilot server-side Auto routing and session tokens.",
 	"type": "module",
 	"packageManager": "pnpm@12.4.2",
 	"license": "MIT",
@@ -47,8 +47,8 @@
 		]
 	},
 	"peerDependencies": {
-		"@earendil-works/pi-ai": "*",
-		"@earendil-works/pi-coding-agent": "*"
+		"@earendil-works/pi-ai": ">=1.5.0",
+		"@earendil-works/pi-coding-agent": ">=1.5.0"
 	},
 	"devDependencies": {
 		"@biomejs/biome": "^2.6.4",
