@@ -44,7 +44,7 @@ Pi loads the extension from the package manifest in `package.json`:
 - Requests outside the agent loop, such as compaction summaries, stay on the model that answered last.
 - A candidate is used only if GitHub listed it in this session's pool and it is available to your Copilot login in Pi. Anything else, and any router failure, uses the default route: the first such model in GitHub's pool order.
 - Prompts with images skip the router and take the default route, preferring a vision-capable pool model.
-- Pi's footer shows the routed model (`auto → gpt-5.4`); the extension's status line adds the source: `auto (gpt-5.4, router)` or `auto (gpt-5.4, default)`.
+- Pi's footer shows the routed model (`auto → gpt-5.4`). Whether the router or the default route picked it is in the log and in `/copilot-auto-doctor`.
 
 ## Commands
 
@@ -53,7 +53,6 @@ Pi loads the extension from the package manifest in `package.json`:
 ## Runtime notes
 
 - Responses are recorded under the physical model that answered, so `/session` costs, context limits, and compaction use that model's real values.
-- The Pi status line shows the model serving the conversation and whether the router or the default picked it.
 - Route decisions (model, source, fallback reason) and Auto session details are logged to `~/.pi/agent/copilot-auto.log`. Prompt text and tokens are never logged.
 - The package is shipped as TypeScript source; Pi loads it directly.
 

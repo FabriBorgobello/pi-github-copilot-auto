@@ -16,10 +16,7 @@
  *
  */
 
-import type {
-	ExtensionAPI,
-	ExtensionContext,
-} from "@earendil-works/pi-coding-agent";
+import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { copilotModels, getCopilotAuth } from "./auth.ts";
 import {
 	AUTO_MODEL_ID,
@@ -28,14 +25,9 @@ import {
 	PROVIDER_ID,
 } from "./config.ts";
 import { runDoctor } from "./doctor.ts";
-import {
-	AutoRouter,
-	type AutoRouteState,
-	type RouteDecision,
-} from "./router.ts";
+import { AutoRouter, type AutoRouteState } from "./router.ts";
 import { getAutoSession } from "./session.ts";
 
-const STATUS_KEY = "copilot-auto-route";
 const SESSION_TOKEN_HEADER = "Copilot-Session-Token";
 
 function isAutoModel(model: { provider: string; id: string } | undefined) {
@@ -43,10 +35,6 @@ function isAutoModel(model: { provider: string; id: string } | undefined) {
 }
 
 export default function (pi: ExtensionAPI) {
-	// Held only between session_start and session_shutdown. Session replacement
-	// invalidates the old context, so it is dropped on shutdown rather than
-	// captured for the lifetime of the extension runtime.
-	let session: ExtensionContext | undefined;
 	const router = new AutoRouter();
 	// Session token of the Auto session the latest route came from. Every
 	// request Pi makes while Auto is selected is routed through route() first,
@@ -55,33 +43,14 @@ export default function (pi: ExtensionAPI) {
 	// long as Auto is selected rather than handed to a single request.
 	let sessionToken: string | undefined;
 
-	// setStatus writes the interactive footer; RPC, JSON and print modes have no
-	// status bar, so the whole route indicator is guarded on mode === "tui".
-	const showRoute = (decision: RouteDecision) => {
-		if (session?.mode !== "tui") return;
-		session.ui.setStatus(
-			STATUS_KEY,
-			session.ui.theme.fg(
-				"muted",
-				`auto (${decision.model}, ${decision.source})`,
-			),
-		);
-	};
-	const clearRoute = () => {
-		if (session?.mode === "tui") session.ui.setStatus(STATUS_KEY, undefined);
-	};
-
-	pi.on("session_start", (_event, ctx) => {
-		session = ctx;
+	pi.on("session_start", () => {
 		router.reset();
 	});
 	pi.on("session_shutdown", () => {
 		// Idempotent: cancellation, reload, session replacement and process exit
 		// can all converge here.
-		clearRoute();
 		router.reset();
 		sessionToken = undefined;
-		session = undefined;
 	});
 	pi.on("session_compact", () => {
 		// VS Code re-routes after compaction (invalidateRouterCache); the
@@ -89,10 +58,7 @@ export default function (pi: ExtensionAPI) {
 		router.invalidate();
 	});
 	pi.on("model_select", (event) => {
-		if (!isAutoModel(event.model)) {
-			clearRoute();
-			sessionToken = undefined;
-		}
+		if (!isAutoModel(event.model)) sessionToken = undefined;
 	});
 	pi.on("before_provider_headers", (event, ctx) => {
 		// The hook does not name the request's model. While Auto is selected,
@@ -161,7 +127,6 @@ export default function (pi: ExtensionAPI) {
 				);
 			}
 			sessionToken = auto.sessionToken;
-			if (route.decision) showRoute(route.decision);
 			return {
 				model,
 				thinkingLevel: request.thinkingLevel,
