@@ -17,9 +17,11 @@
  * - body `{ prompt, available_models, ...signals }`, authenticated with the
  *   Copilot token plus the Auto session token, abandoned after 1 s;
  * - the router is consulted on the first user prompt of a conversation and
- *   again after compaction; the decision then sticks for the conversation;
+ *   again after compaction; the decision then sticks for the conversation,
+ *   kept in Pi's virtual-model router state so it survives resume and forks;
  * - image prompts, empty prompts, router failures, and candidates that are not
- *   both in the pool and streamable here all fall back to the default route.
+ *   both in the pool and in Pi's github-copilot catalog all fall back to the
+ *   default route.
  *
  * Only the latest user prompt is sent — never tool output or earlier turns.
  * Logs and diagnostics carry model ids, labels and HTTP statuses, never the
@@ -27,6 +29,7 @@
  */
 import { randomUUID } from "node:crypto";
 import type { Api, Message, Model } from "@earendil-works/pi-ai/compat";
+import type { ModelRouteReason } from "@earendil-works/pi-coding-agent";
 import { COPILOT_HEADERS, log } from "./config.ts";
 import { pickAutoModel, redactResponseBody } from "./helpers.ts";
 import { type RouterDecision, RouterDecisionSchema } from "./schemas.ts";
@@ -78,7 +81,7 @@ export interface RoutingPrompt {
 }
 
 /** The latest user message is the prompt to route; earlier turns stay local. */
-export function routingPrompt(messages: Message[]): RoutingPrompt {
+export function routingPrompt(messages: readonly Message[]): RoutingPrompt {
 	let turnNumber = 0;
 	let latest: Extract<Message, { role: "user" }> | undefined;
 	for (const message of messages) {
@@ -100,7 +103,7 @@ export function routingPrompt(messages: Message[]): RoutingPrompt {
 
 /**
  * First router candidate that GitHub actually offered in this session's pool
- * and that Pi can stream here. A candidate outside the pool is never used:
+ * and that Pi's github-copilot provider can serve. A candidate outside the pool is never used:
  * the session token is only valid for the pool it was issued for.
  */
 export function pickRoutedModel(
@@ -192,14 +195,36 @@ export async function fetchRouterDecision(
 	return { ok: true, decision: parsed.data };
 }
 
+/** Router state Pi stores on the session branch (`ModelRoute.state`). */
+export interface AutoRouteState {
+	/** The conversation's route; it sticks until compaction or a pool change. */
+	decision: RouteDecision;
+	/** Random id sent as the router's session_id signal, one per conversation. */
+	conversationId: string;
+}
+
 export interface ResolveRouteInput {
 	base: string;
 	copilotToken: string;
 	session: AutoSession;
-	messages: Message[];
-	/** Pi's github-copilot models this extension can stream, by id. */
+	messages: readonly Message[];
+	/** Pi's github-copilot models the Auto model can route to, by id. */
 	known: Map<string, Model<Api>>;
+	reason: ModelRouteReason;
+	/** Router state Pi restored for this branch; absent for `direct` requests. */
+	state?: AutoRouteState;
+	/** github-copilot model id of the latest successful response, if any. */
+	previousModel?: string;
 	signal?: AbortSignal;
+}
+
+export interface ResolvedRoute {
+	/** Pool model that serves this request. */
+	model: string;
+	/** The conversation's route; absent for `direct` requests. */
+	decision?: RouteDecision;
+	/** State for Pi to store; `input.state` itself when nothing changed. */
+	state?: AutoRouteState;
 }
 
 export interface AutoRouterOptions {
@@ -207,14 +232,13 @@ export interface AutoRouterOptions {
 }
 
 /**
- * Per-conversation routing state. One instance lives for the extension; the
- * host resets it when the Pi session changes and invalidates it after
- * compaction, matching VS Code's once-per-conversation cadence.
+ * Routing policy for the Auto virtual model. The conversation's route lives
+ * in Pi's router state; this instance only remembers, per process, that a
+ * compaction asked for the next prompt to be routed again, matching VS
+ * Code's once-per-conversation cadence.
  */
 export class AutoRouter {
-	#sticky: RouteDecision | undefined;
-	#previousModel: string | undefined;
-	#conversationId = randomUUID();
+	#rerouteRequested = false;
 	#last: RouteDecision | undefined;
 	readonly #timeoutMs: number | undefined;
 
@@ -227,45 +251,63 @@ export class AutoRouter {
 		return this.#last;
 	}
 
-	/** Forget the sticky route; the next prompt is routed again. */
+	/** Route the next user prompt again, e.g. after compaction. */
 	invalidate(): void {
-		this.#sticky = undefined;
+		this.#rerouteRequested = true;
 	}
 
-	/** New conversation: no sticky route, no previous model, fresh id. */
+	/** New Pi session: drop a pending re-route request. */
 	reset(): void {
-		this.#sticky = undefined;
-		this.#previousModel = undefined;
-		this.#conversationId = randomUUID();
+		this.#rerouteRequested = false;
 	}
 
 	/**
 	 * Decide which pool model serves this request. Returns undefined when the
-	 * pool holds nothing this extension can stream; the caller reports that.
+	 * pool holds nothing the Auto model can route to; the caller reports that.
 	 */
-	async resolve(input: ResolveRouteInput): Promise<RouteDecision | undefined> {
-		const { session, known } = input;
+	async resolve(input: ResolveRouteInput): Promise<ResolvedRoute | undefined> {
+		const { session, known, state } = input;
 		const supported = new Set(known.keys());
 		const pool = session.availableModels;
 		if (!pickAutoModel(pool, supported)) return undefined;
+		const usable = (id: string | undefined): id is string =>
+			id !== undefined && pool.includes(id) && supported.has(id);
 
-		const sticky = this.#sticky;
-		if (sticky && pool.includes(sticky.model) && supported.has(sticky.model))
-			return sticky;
+		// Requests outside the agent loop, such as compaction summaries, carry no
+		// state: stay on the model that answered last, else take the default.
+		if (input.reason === "direct") {
+			const model = usable(input.previousModel)
+				? input.previousModel
+				: this.#defaultModel(input, routingPrompt(input.messages), supported);
+			return { model };
+		}
 
-		const prompt = routingPrompt(input.messages);
-		const decision = await this.#decide(input, prompt, supported);
-		this.#sticky = decision;
-		this.#previousModel = decision.model;
+		const rerouting = input.reason === "user" && this.#rerouteRequested;
+		if (state && usable(state.decision.model) && !rerouting)
+			return { model: state.decision.model, decision: state.decision, state };
+
+		const conversationId = state?.conversationId ?? randomUUID();
+		const decision = await this.#decide(
+			input,
+			routingPrompt(input.messages),
+			supported,
+			conversationId,
+		);
+		this.#rerouteRequested = false;
 		this.#last = decision;
 		log(`route: ${describeRouteDecision(decision)}`);
-		return decision;
+		return {
+			model: decision.model,
+			decision,
+			state: { decision, conversationId },
+		};
 	}
 
 	async #decide(
 		input: ResolveRouteInput,
 		prompt: RoutingPrompt,
 		supported: Set<string>,
+		conversationId: string,
 	): Promise<RouteDecision> {
 		const pool = input.session.availableModels;
 		const fallback = (
@@ -289,8 +331,8 @@ export class AutoRouter {
 			prompt: prompt.text,
 			signals: {
 				turn_number: prompt.turnNumber,
-				session_id: this.#conversationId,
-				previous_model: this.#previousModel,
+				session_id: conversationId,
+				previous_model: input.state?.decision.model,
 				prompt_char_count: prompt.text.length,
 			},
 			signal: input.signal,

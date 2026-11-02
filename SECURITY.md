@@ -16,8 +16,8 @@ Include:
 - package version
 - OS
 - exact steps to reproduce
-- whether any token or auth file content was exposed
+- whether any token was exposed
 
 ## Notes
 
-This package reads Pi's stored GitHub Copilot credential from disk and exchanges it for a short-lived Copilot token. Review changes to auth, logging, and network calls carefully.
+This package asks Pi's model registry for the GitHub Copilot token of Pi's built-in `github-copilot` provider and adds the Auto session token to chat requests while Copilot Auto is selected. It never reads Pi's auth file itself. Review changes to auth, the `before_provider_headers` hook, logging, and network calls carefully.

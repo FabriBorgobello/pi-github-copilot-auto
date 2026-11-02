@@ -7,6 +7,8 @@ import { join } from "node:path";
 
 export const PROVIDER_ID = "github-copilot-auto";
 export const AUTO_MODEL_ID = "auto";
+/** Pi's built-in provider whose models and login the Auto model routes to. */
+export const COPILOT_PROVIDER_ID = "github-copilot";
 const COPILOT_API_VERSION = "2026-06-01";
 
 // Same client identity the built-in github-copilot provider sends. Copilot-Integration-Id
@@ -19,8 +21,6 @@ export const COPILOT_HEADERS: Record<string, string> = {
 	"X-GitHub-Api-Version": COPILOT_API_VERSION,
 };
 
-export const AUTH_PATH =
-	process.env.PI_COPILOT_AUTH || join(homedir(), ".pi", "agent", "auth.json");
 const LOG_PATH = join(homedir(), ".pi", "agent", "copilot-auto.log");
 
 export function log(msg: string): void {
