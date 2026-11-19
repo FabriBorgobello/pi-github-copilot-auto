@@ -20,6 +20,7 @@ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { copilotModels, getCopilotAuth } from "./auth.ts";
 import {
 	AUTO_MODEL_ID,
+	COPILOT_API_VERSION,
 	COPILOT_PROVIDER_ID,
 	log,
 	PROVIDER_ID,
@@ -64,8 +65,13 @@ export default function (pi: ExtensionAPI) {
 		// The hook does not name the request's model. While Auto is selected,
 		// Pi's session requests all go through route(), which only returns
 		// github-copilot models, so the token never reaches another provider.
-		if (sessionToken && isAutoModel(ctx.model))
+		// Copilot ignores the session token on a request without an API version
+		// and treats it as a hand-picked model, which Auto-only plans (Free,
+		// Education) reject with model_not_supported. Pi's chat requests send none.
+		if (sessionToken && isAutoModel(ctx.model)) {
 			event.headers[SESSION_TOKEN_HEADER] = sessionToken;
+			event.headers["X-GitHub-Api-Version"] = COPILOT_API_VERSION;
+		}
 	});
 
 	pi.registerCommand("copilot-auto-doctor", {
