@@ -38,10 +38,10 @@ Pi loads the extension from the package manifest in `package.json`:
 ## How routing works
 
 - `/auto` sees only the text of your latest prompt, the routing tier (`balance`, VS Code's default) and whether an image is attached. Tool output and earlier turns are never sent.
-- `/auto` is asked on the first prompt of a conversation; its pick then sticks for the whole conversation, including every tool-call step. After `/compact` the next prompt is routed again.
+- `/auto` is asked on the first prompt of a conversation; its pick then sticks for the whole conversation, including every tool-call step. After `/compact` the next prompt is routed again, as is a prompt that attaches an image the current model cannot take.
 - The picked model is stored as Pi router state, so it follows forks and `/tree`. The session token (valid 24 hours) is kept in memory only and never written to the session file, so a conversation resumed in a new Pi process asks `/auto` again and may land on a different model.
 - Requests outside the agent loop, such as compaction summaries, stay on the latest route.
-- If `/auto` fails, the conversation keeps its current route while that is still valid. Otherwise the request fails with `/auto`'s error: there is no fallback model, because plans that only allow Auto (Free, Education) can't use any other.
+- If `/auto` fails, the conversation keeps its current route while that is still valid and able to take the prompt's images. Otherwise the request fails with `/auto`'s error: there is no fallback model, because plans that only allow Auto (Free, Education) can't use any other.
 - Pi's footer shows the routed model (`auto → mai-code-2-flash`).
 
 ## Commands
@@ -102,7 +102,7 @@ This package uses the Copilot token of Pi's `github-copilot` provider and adds t
 The Copilot Auto protocol is undocumented; this extension mirrors the open-source VS Code client. Diff against these when GitHub changes something:
 
 - `/auto` request/response and the 5 s timeout: [autoV2Fetcher.ts](https://github.com/microsoft/vscode/blob/main/extensions/copilot/src/platform/endpoint/node/autoV2Fetcher.ts).
-- Routing cadence, re-route after compaction, reuse of the last route on failure, vision check: [automodeService.ts](https://github.com/microsoft/vscode/blob/main/extensions/copilot/src/platform/endpoint/node/automodeService.ts).
+- Routing cadence, re-route after compaction, reuse of the last route on failure, vision check on a kept route (`_isCacheEntryCompatible`): [automodeService.ts](https://github.com/microsoft/vscode/blob/main/extensions/copilot/src/platform/endpoint/node/automodeService.ts).
 - Tiers and the `balance` default: [autoModeTiers.ts](https://github.com/microsoft/vscode/blob/main/extensions/copilot/src/platform/endpoint/common/autoModeTiers.ts).
 - Endpoint path and API version (`2026-08-01`): [`@vscode/copilot-api`](https://www.npmjs.com/package/@vscode/copilot-api) 0.5.2 (`capiAutoURL`).
 - Copilot ignores the session token on a chat request without `X-GitHub-Api-Version`: found in [yetone/magpie#256](https://github.com/yetone/magpie/issues/256) and reproduced on a Copilot Free account (#6).

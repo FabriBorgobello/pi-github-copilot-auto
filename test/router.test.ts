@@ -393,16 +393,19 @@ describe("AutoRouter.resolve", () => {
 		}
 	});
 
-	test("fails instead of sending an image to a text-only pick", async () => {
-		// Every catalog model takes images today, so add a text-only one.
-		const textOnly = "text-only-model";
+	// Every catalog model takes images today, so add a text-only one.
+	const textOnly = "text-only-model";
+	const withTextOnly = (() => {
 		const base = known.get(first);
 		assert.ok(base);
-		const withTextOnly = new Map(known).set(textOnly, {
+		return new Map(known).set(textOnly, {
 			...base,
 			id: textOnly,
 			input: ["text"],
 		});
+	})();
+
+	test("fails instead of sending an image to a text-only pick", async () => {
 		const fetchStub = stubFetch(() => pick(textOnly));
 		try {
 			await assert.rejects(
@@ -413,6 +416,59 @@ describe("AutoRouter.resolve", () => {
 			);
 			const body = JSON.parse(String(fetchStub.calls[0].init?.body));
 			assert.equal(body.has_image, true);
+		} finally {
+			fetchStub.restore();
+		}
+	});
+
+	test("routes again when a later prompt attaches an image the kept model cannot take", async () => {
+		let model = textOnly;
+		const fetchStub = stubFetch(() => pick(model));
+		try {
+			const router = new AutoRouter();
+			const routed = await router.resolve(input({ known: withTextOnly }));
+			// Text prompts keep the text-only route.
+			await router.resolve(input({ known: withTextOnly, state: routed.state }));
+			assert.equal(fetchStub.calls.length, 1);
+
+			model = second;
+			const rerouted = await router.resolve(
+				input({
+					known: withTextOnly,
+					messages: [imagePrompt],
+					state: routed.state,
+				}),
+			);
+			assert.equal(fetchStub.calls.length, 2);
+			assert.equal(rerouted.model, second);
+			assert.equal(
+				JSON.parse(String(fetchStub.calls[1].init?.body)).has_image,
+				true,
+			);
+		} finally {
+			fetchStub.restore();
+		}
+	});
+
+	test("does not fall back to a kept model that cannot take the image", async () => {
+		let fail = false;
+		const fetchStub = stubFetch(() =>
+			fail ? textResponse("unavailable", 503) : pick(textOnly),
+		);
+		try {
+			const router = new AutoRouter();
+			const routed = await router.resolve(input({ known: withTextOnly }));
+			fail = true;
+			await assert.rejects(
+				router.resolve(
+					input({
+						known: withTextOnly,
+						messages: [imagePrompt],
+						state: routed.state,
+					}),
+				),
+				{ message: /\/auto 503/ },
+			);
 		} finally {
 			fetchStub.restore();
 		}

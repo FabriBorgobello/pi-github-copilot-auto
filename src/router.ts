@@ -9,24 +9,27 @@
  *   (request body, 5 s timeout, AutoV2Response)
  * - src/platform/endpoint/node/automodeService.ts at e54f253d94
  *   (once-per-conversation cadence, re-route after compaction, reuse of the
- *   last good route when /auto fails, vision check)
+ *   last good route when /auto fails, vision check, _isCacheEntryCompatible)
  * - src/platform/endpoint/common/autoModeTiers.ts (tiers, `balance` default)
  * - https://www.npmjs.com/package/@vscode/copilot-api (0.5.2): RequestType.Auto
  *   resolves to `${capiBaseUrl}/auto`.
  *
  * Behaviour mirrored:
  *
- * - body `{ prompt, tier, has_image? }`, authenticated with the Copilot token,
+ * - body `{ prompt, has_image? }`, authenticated with the Copilot token,
  *   abandoned after 5 s;
  * - /auto is asked on the first user prompt of a conversation and again after
  *   compaction; the route then sticks for the conversation. The picked model
  *   is kept in Pi's router state, so it follows resume and forks;
+ * - a route serves a request only while its token is live and its model
+ *   accepts the images the prompt attaches;
+ *   otherwise /auto is asked again;
  * - the session token is bound to the picked model and lasts 24 h. It is kept
  *   in memory only, never in router state, so the session file holds no
  *   credential. A conversation without a live token (resumed in a new
  *   process, or expired) asks /auto again;
- * - when /auto fails, the conversation's last live route is reused; with none
- *   there is no fallback, because Auto-only plans can serve nothing else.
+ * - when /auto fails, the conversation's route is reused if it can still
+ *   serve the request; with none there is no fallback, because Auto-only plans can serve nothing else.
  *
  * Only the latest user prompt is sent — never tool output or earlier turns.
  * Logs and diagnostics carry model ids and HTTP statuses, never the prompt
@@ -203,18 +206,23 @@ export class AutoRouter {
 
 	/** Decide which model serves this request, and with which session token. */
 	async resolve(input: ResolveRouteInput): Promise<ResolvedRoute> {
-		const live = (route: AutoRoute | undefined): route is AutoRoute =>
-			route !== undefined && route.expiresAtMs - Date.now() > EXPIRY_MARGIN_MS;
+		const prompt = routingPrompt(input.messages);
+		// VS Code's _isCacheEntryCompatible: a route whose model would get the
+		// prompt's images as placeholders is asked for again rather than reused.
+		const usable = (route: AutoRoute | undefined): route is AutoRoute =>
+			route !== undefined &&
+			route.expiresAtMs - Date.now() > EXPIRY_MARGIN_MS &&
+			(!prompt.hasImage || acceptsImages(input.known, route.model));
 
 		// Requests outside the agent loop, such as compaction summaries, carry no
 		// state: stay on the route that answered last.
 		if (input.reason === "direct") {
-			if (live(this.#last))
+			if (usable(this.#last))
 				return {
 					model: this.#last.model,
 					sessionToken: this.#last.sessionToken,
 				};
-			const route = await this.#route(input, undefined);
+			const route = await this.#route(input, prompt, undefined);
 			return { model: route.model, sessionToken: route.sessionToken };
 		}
 
@@ -223,7 +231,7 @@ export class AutoRouter {
 			? this.#sessions.get(state.conversationId)
 			: undefined;
 		const rerouting = input.reason === "user" && this.#rerouteRequested;
-		if (state && live(current) && current.model === state.model && !rerouting)
+		if (state && usable(current) && current.model === state.model && !rerouting)
 			return {
 				model: current.model,
 				sessionToken: current.sessionToken,
@@ -231,7 +239,11 @@ export class AutoRouter {
 			};
 
 		const conversationId = state?.conversationId ?? randomUUID();
-		const route = await this.#route(input, live(current) ? current : undefined);
+		const route = await this.#route(
+			input,
+			prompt,
+			usable(current) ? current : undefined,
+		);
 		this.#sessions.set(conversationId, route);
 		this.#rerouteRequested = false;
 		return {
@@ -245,14 +257,14 @@ export class AutoRouter {
 	}
 
 	/**
-	 * Ask /auto for this prompt. `fallback` is the conversation's live route,
-	 * reused when /auto fails, as VS Code does.
+	 * Ask /auto for this prompt. `fallback` is the conversation's route if it
+	 * can serve this request, reused when /auto fails, as VS Code does.
 	 */
 	async #route(
 		input: ResolveRouteInput,
+		prompt: RoutingPrompt,
 		fallback: AutoRoute | undefined,
 	): Promise<AutoRoute> {
-		const prompt = routingPrompt(input.messages);
 		let route: AutoRoute;
 		try {
 			if (!prompt.text)
@@ -291,4 +303,8 @@ export class AutoRouter {
 		log(`route: ${describeRoute(route)}`);
 		return route;
 	}
+}
+
+function acceptsImages(known: Map<string, Model<Api>>, model: string): boolean {
+	return known.get(model)?.input.includes("image") ?? false;
 }
