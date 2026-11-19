@@ -1,3 +1,10 @@
+## [0.4.2](https://github.com/FabriBorgobello/pi-github-copilot-auto/compare/v0.4.1...v0.4.2) (2026-11-19)
+
+
+### Bug Fixes
+
+* send the API version so Copilot honours the Auto session token ([6bf6871](https://github.com/FabriBorgobello/pi-github-copilot-auto/commit/6bf68714e088b2d9040649e6e077db4c843e9e11)), closes [#6](https://github.com/FabriBorgobello/pi-github-copilot-auto/issues/6)
+
 ## [0.4.1](https://github.com/FabriBorgobello/pi-github-copilot-auto/compare/v0.4.0...v0.4.1) (2026-11-02)
 
 
