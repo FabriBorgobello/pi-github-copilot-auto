@@ -39,10 +39,10 @@ Pi loads the extension from the package manifest in `package.json`:
 
 The tier biases which models `/auto` may pick, as VS Code's Auto tier picker does:
 
-| Model | Tier |
-|---|---|
-| `github-copilot-auto/auto` | `balance` (VS Code's default) |
-| `github-copilot-auto/auto-efficiency` | `efficiency`: lighter, cheaper models |
+| Model                                   | Tier                                    |
+| --------------------------------------- | --------------------------------------- |
+| `github-copilot-auto/auto`              | `balance` (VS Code's default)           |
+| `github-copilot-auto/auto-efficiency`   | `efficiency`: lighter, cheaper models   |
 | `github-copilot-auto/auto-intelligence` | `intelligence`: the most capable models |
 
 Switching between them mid-conversation routes the next prompt again under the new tier. VS Code's `fast` tier is its inline-chat profile and is not offered in its picker, so it is not offered here either.
