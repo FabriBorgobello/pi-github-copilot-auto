@@ -9,7 +9,7 @@ export const PROVIDER_ID = "github-copilot-auto";
 export const AUTO_MODEL_ID = "auto";
 /** Pi's built-in provider whose models and login the Auto model routes to. */
 export const COPILOT_PROVIDER_ID = "github-copilot";
-const COPILOT_API_VERSION = "2026-06-01";
+export const COPILOT_API_VERSION = "2026-06-01";
 
 // Same client identity the built-in github-copilot provider sends. Copilot-Integration-Id
 // is the gate for the /models/session endpoints; reuse the value that already works for chat.

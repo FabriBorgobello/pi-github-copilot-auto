@@ -39,6 +39,7 @@ import {
 // Must precede the imports below: config.ts resolves its log path at module init.
 const home = redirectAgentDir();
 const { default: extension } = await import("../src/index.ts");
+const { COPILOT_API_VERSION } = await import("../src/config.ts");
 
 // openai-completions models keep the stubbed stream short. The router's pick
 // is second in pool order, so it is distinguishable from the default route.
@@ -166,6 +167,8 @@ describe("Auto virtual model in a Pi session", () => {
 		assert.ok(chat, "no chat request was sent");
 		assert.ok(chat.url.startsWith(EXPECTED_API_BASE));
 		assert.equal(chat.headers["copilot-session-token"], SAMPLE_SESSION_TOKEN);
+		// Without an API version Copilot ignores the session token (issue #6).
+		assert.equal(chat.headers["x-github-api-version"], COPILOT_API_VERSION);
 		assert.equal(chat.headers.authorization, `Bearer ${SAMPLE_COPILOT_TOKEN}`);
 		assert.equal(harness.routerCalls().length, 1);
 	});
@@ -250,6 +253,7 @@ describe("Auto virtual model in a Pi session", () => {
 			SAMPLE_SESSION_TOKEN,
 		);
 		assert.equal(chats[1].headers["copilot-session-token"], undefined);
+		assert.equal(chats[1].headers["x-github-api-version"], undefined);
 	});
 
 	test("ends the turn with an actionable error when there is no Copilot login", async () => {
