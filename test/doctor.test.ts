@@ -106,7 +106,9 @@ describe("runDoctor", () => {
 			const report = await runDoctor(registry, router);
 
 			assert.ok(
-				report.includes(`Last route: ${target} (Auto selected ${target}.)`),
+				report.includes(
+					`Last route: ${target} (Auto selected ${target}.), tier balance`,
+				),
 				report,
 			);
 			assert.ok(!report.includes(SAMPLE_SESSION_TOKEN));

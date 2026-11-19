@@ -6,12 +6,33 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 
 export const PROVIDER_ID = "github-copilot-auto";
-export const AUTO_MODEL_ID = "auto";
 /**
- * Routing profile sent to POST /auto: efficiency, balance, intelligence or
- * fast. `balance` is VS Code's default (autoModeTiers.ts).
+ * Routing profile sent to POST /auto. It biases which models the router may
+ * pick. VS Code offers efficiency, balance and intelligence in its picker,
+ * defaulting to balance; `fast` is its inline-chat profile and is not offered
+ * (autoModeTiers.ts).
  */
-export const AUTO_TIER = "balance";
+export type AutoTier = "efficiency" | "balance" | "intelligence";
+export const AUTO_TIER: AutoTier = "balance";
+
+/** The Auto models, one per tier. `auto` keeps the default tier. */
+export const AUTO_MODELS: readonly {
+	id: string;
+	name: string;
+	tier: AutoTier;
+}[] = [
+	{ id: "auto", name: "Copilot Auto", tier: AUTO_TIER },
+	{
+		id: "auto-efficiency",
+		name: "Copilot Auto (Efficiency)",
+		tier: "efficiency",
+	},
+	{
+		id: "auto-intelligence",
+		name: "Copilot Auto (Intelligence)",
+		tier: "intelligence",
+	},
+];
 /** Pi's built-in provider whose models and login the Auto model routes to. */
 export const COPILOT_PROVIDER_ID = "github-copilot";
 // The version @vscode/copilot-api 0.5.2 sends on every Copilot API request.

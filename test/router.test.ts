@@ -80,7 +80,12 @@ describe("routingPrompt", () => {
 
 describe("describeRoute", () => {
 	test("adds the server's reason when it gave one", () => {
-		const route = { model: "gpt-x", sessionToken: "t", expiresAtMs: 0 };
+		const route = {
+			model: "gpt-x",
+			sessionToken: "t",
+			expiresAtMs: 0,
+			tier: "balance" as const,
+		};
 		assert.equal(describeRoute(route), "gpt-x");
 		assert.equal(
 			describeRoute({ ...route, reason: "best fit" }),
@@ -467,6 +472,58 @@ describe("AutoRouter.resolve", () => {
 						state: routed.state,
 					}),
 				),
+				{ message: /\/auto 503/ },
+			);
+		} finally {
+			fetchStub.restore();
+		}
+	});
+
+	test("sends the selected tier and routes again when it changes", async () => {
+		const fetchStub = stubFetch(() => pick(second));
+		try {
+			const router = new AutoRouter();
+			const routed = await router.resolve(input({ tier: "efficiency" }));
+			await router.resolve(
+				input({
+					tier: "efficiency",
+					reason: "continuation",
+					state: routed.state,
+				}),
+			);
+			assert.equal(fetchStub.calls.length, 1);
+
+			const switched = await router.resolve(
+				input({ tier: "intelligence", state: routed.state }),
+			);
+			assert.equal(fetchStub.calls.length, 2);
+			assert.deepEqual(
+				fetchStub.calls.map((call) => JSON.parse(String(call.init?.body)).tier),
+				["efficiency", "intelligence"],
+			);
+			assert.equal(switched.sessionToken, SAMPLE_SESSION_TOKEN);
+			assert.equal(router.lastRoute?.tier, "intelligence");
+		} finally {
+			fetchStub.restore();
+		}
+	});
+
+	test("does not fall back to a route made for another tier", async () => {
+		let fail = false;
+		const fetchStub = stubFetch(() =>
+			fail ? textResponse("unavailable", 503) : pick(second),
+		);
+		try {
+			const router = new AutoRouter();
+			const routed = await router.resolve(input());
+			fail = true;
+			await assert.rejects(
+				router.resolve(input({ tier: "intelligence", state: routed.state })),
+				{ message: /\/auto 503/ },
+			);
+			// Direct requests do not borrow it either.
+			await assert.rejects(
+				router.resolve(input({ tier: "intelligence", reason: "direct" })),
 				{ message: /\/auto 503/ },
 			);
 		} finally {

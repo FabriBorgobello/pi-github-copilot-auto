@@ -31,7 +31,7 @@ export async function runDoctor(
 		probe = `failed: ${error instanceof Error ? error.message : String(error)}`;
 	}
 	const lastRoute = router?.lastRoute
-		? describeRoute(router.lastRoute)
+		? `${describeRoute(router.lastRoute)}, tier ${router.lastRoute.tier}`
 		: "none yet (decided on the first prompt of a conversation)";
 
 	return [

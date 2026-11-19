@@ -16,13 +16,13 @@
  *
  * Behaviour mirrored:
  *
- * - body `{ prompt, has_image? }`, authenticated with the Copilot token,
+ * - body `{ prompt, tier, has_image? }`, authenticated with the Copilot token,
  *   abandoned after 5 s;
  * - /auto is asked on the first user prompt of a conversation and again after
  *   compaction; the route then sticks for the conversation. The picked model
  *   is kept in Pi's router state, so it follows resume and forks;
- * - a route serves a request only while its token is live and its model
- *   accepts the images the prompt attaches;
+ * - a route serves a request only while its token is live, it was made for
+ *   the selected tier, and its model accepts the images the prompt attaches;
  *   otherwise /auto is asked again;
  * - the session token is bound to the picked model and lasts 24 h. It is kept
  *   in memory only, never in router state, so the session file holds no
@@ -38,7 +38,7 @@
 import { randomUUID } from "node:crypto";
 import type { Api, Message, Model } from "@earendil-works/pi-ai/compat";
 import type { ModelRouteReason } from "@earendil-works/pi-coding-agent";
-import { AUTO_TIER, COPILOT_HEADERS, log } from "./config.ts";
+import { AUTO_TIER, type AutoTier, COPILOT_HEADERS, log } from "./config.ts";
 import { redactResponseBody } from "./helpers.ts";
 import { AutoDecisionSchema } from "./schemas.ts";
 
@@ -72,6 +72,7 @@ export interface AutoRoute {
 	model: string;
 	sessionToken: string;
 	expiresAtMs: number;
+	tier: AutoTier;
 	/** `selection_reason` from /auto, for diagnostics. */
 	reason?: string;
 }
@@ -85,7 +86,7 @@ export interface AutoRequest {
 	copilotToken: string;
 	prompt: string;
 	hasImage: boolean;
-	tier?: string;
+	tier?: AutoTier;
 	signal?: AbortSignal;
 	timeoutMs?: number;
 }
@@ -99,10 +100,8 @@ export async function fetchAutoRoute(request: AutoRequest): Promise<AutoRoute> {
 	const signal = request.signal
 		? AbortSignal.any([request.signal, timeout])
 		: timeout;
-	const body: Record<string, unknown> = {
-		prompt: request.prompt,
-		tier: request.tier ?? AUTO_TIER,
-	};
+	const tier = request.tier ?? AUTO_TIER;
+	const body: Record<string, unknown> = { prompt: request.prompt, tier };
 	if (request.hasImage) body.has_image = true;
 	let res: Response;
 	try {
@@ -139,6 +138,7 @@ export async function fetchAutoRoute(request: AutoRequest): Promise<AutoRoute> {
 		model: parsed.data.selected_model.id,
 		sessionToken: parsed.data.session_token,
 		expiresAtMs: parsed.data.expires_at * 1000,
+		tier,
 		reason: parsed.data.selection_reason,
 	};
 }
@@ -157,6 +157,8 @@ export interface ResolveRouteInput {
 	messages: readonly Message[];
 	/** Pi's github-copilot models the Auto model can route to, by id. */
 	known: Map<string, Model<Api>>;
+	/** Tier of the selected Auto model; defaults to `balance`. */
+	tier?: AutoTier;
 	reason: ModelRouteReason;
 	/** Router state Pi restored for this branch; absent for `direct` requests. */
 	state?: AutoRouteState;
@@ -207,11 +209,14 @@ export class AutoRouter {
 	/** Decide which model serves this request, and with which session token. */
 	async resolve(input: ResolveRouteInput): Promise<ResolvedRoute> {
 		const prompt = routingPrompt(input.messages);
-		// VS Code's _isCacheEntryCompatible: a route whose model would get the
-		// prompt's images as placeholders is asked for again rather than reused.
+		const tier = input.tier ?? AUTO_TIER;
+		// VS Code's _isCacheEntryCompatible: a route made for another tier, or
+		// whose model would get the prompt's images as placeholders, is asked
+		// for again rather than reused.
 		const usable = (route: AutoRoute | undefined): route is AutoRoute =>
 			route !== undefined &&
 			route.expiresAtMs - Date.now() > EXPIRY_MARGIN_MS &&
+			route.tier === tier &&
 			(!prompt.hasImage || acceptsImages(input.known, route.model));
 
 		// Requests outside the agent loop, such as compaction summaries, carry no
@@ -222,7 +227,7 @@ export class AutoRouter {
 					model: this.#last.model,
 					sessionToken: this.#last.sessionToken,
 				};
-			const route = await this.#route(input, prompt, undefined);
+			const route = await this.#route(input, prompt, tier, undefined);
 			return { model: route.model, sessionToken: route.sessionToken };
 		}
 
@@ -242,6 +247,7 @@ export class AutoRouter {
 		const route = await this.#route(
 			input,
 			prompt,
+			tier,
 			usable(current) ? current : undefined,
 		);
 		this.#sessions.set(conversationId, route);
@@ -263,6 +269,7 @@ export class AutoRouter {
 	async #route(
 		input: ResolveRouteInput,
 		prompt: RoutingPrompt,
+		tier: AutoTier,
 		fallback: AutoRoute | undefined,
 	): Promise<AutoRoute> {
 		let route: AutoRoute;
@@ -274,6 +281,7 @@ export class AutoRouter {
 				copilotToken: input.copilotToken,
 				prompt: prompt.text,
 				hasImage: prompt.hasImage,
+				tier,
 				signal: input.signal,
 				timeoutMs: this.#timeoutMs,
 			});
@@ -300,7 +308,7 @@ export class AutoRouter {
 				`Copilot Auto picked ${route.model}, which does not accept images.`,
 			);
 		this.#last = route;
-		log(`route: ${describeRoute(route)}`);
+		log(`route (${tier}): ${describeRoute(route)}`);
 		return route;
 	}
 }

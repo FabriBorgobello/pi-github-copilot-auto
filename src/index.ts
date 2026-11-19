@@ -19,7 +19,7 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { copilotModels, getCopilotAuth } from "./auth.ts";
 import {
-	AUTO_MODEL_ID,
+	AUTO_MODELS,
 	COPILOT_API_VERSION,
 	log,
 	PROVIDER_ID,
@@ -30,7 +30,10 @@ import { AutoRouter, type AutoRouteState } from "./router.ts";
 const SESSION_TOKEN_HEADER = "Copilot-Session-Token";
 
 function isAutoModel(model: { provider: string; id: string } | undefined) {
-	return model?.provider === PROVIDER_ID && model.id === AUTO_MODEL_ID;
+	return (
+		model?.provider === PROVIDER_ID &&
+		AUTO_MODELS.some((auto) => auto.id === model.id)
+	);
 }
 
 export default function (pi: ExtensionAPI) {
@@ -90,42 +93,44 @@ export default function (pi: ExtensionAPI) {
 		},
 	});
 
-	pi.registerVirtualModel<AutoRouteState>({
-		provider: PROVIDER_ID,
-		id: AUTO_MODEL_ID,
-		name: "Copilot Auto",
-		// Passed through to the routed model; Pi clamps it to what that model supports.
-		thinkingLevels: ["off", "minimal", "low", "medium", "high", "xhigh"],
-		// Shown until the first response; Pi then uses the routed model's limits.
-		contextWindow: 400000,
-		maxTokens: 128000,
-		input: ["text", "image"],
-		async route(request, ctx) {
-			const registry = ctx.modelRegistry;
-			const { token, apiBase } = await getCopilotAuth(registry);
-			const known = copilotModels(registry);
-			const route = await router.resolve({
-				base: apiBase,
-				copilotToken: token,
-				messages: request.messages,
-				known,
-				reason: request.reason,
-				state: request.state,
-				signal: request.signal,
-			});
-			// resolve() only returns models in `known`.
-			const model = known.get(route.model);
-			if (!model) {
-				throw new Error(
-					`Copilot Auto: selected model ${route.model} is missing from Pi's catalog.`,
-				);
-			}
-			sessionToken = route.sessionToken;
-			return {
-				model,
-				thinkingLevel: request.thinkingLevel,
-				state: route.state,
-			};
-		},
-	});
+	for (const auto of AUTO_MODELS)
+		pi.registerVirtualModel<AutoRouteState>({
+			provider: PROVIDER_ID,
+			id: auto.id,
+			name: auto.name,
+			// Passed through to the routed model; Pi clamps it to what that model supports.
+			thinkingLevels: ["off", "minimal", "low", "medium", "high", "xhigh"],
+			// Shown until the first response; Pi then uses the routed model's limits.
+			contextWindow: 400000,
+			maxTokens: 128000,
+			input: ["text", "image"],
+			async route(request, ctx) {
+				const registry = ctx.modelRegistry;
+				const { token, apiBase } = await getCopilotAuth(registry);
+				const known = copilotModels(registry);
+				const route = await router.resolve({
+					base: apiBase,
+					copilotToken: token,
+					messages: request.messages,
+					known,
+					tier: auto.tier,
+					reason: request.reason,
+					state: request.state,
+					signal: request.signal,
+				});
+				// resolve() only returns models in `known`.
+				const model = known.get(route.model);
+				if (!model) {
+					throw new Error(
+						`Copilot Auto: selected model ${route.model} is missing from Pi's catalog.`,
+					);
+				}
+				sessionToken = route.sessionToken;
+				return {
+					model,
+					thinkingLevel: request.thinkingLevel,
+					state: route.state,
+				};
+			},
+		});
 }

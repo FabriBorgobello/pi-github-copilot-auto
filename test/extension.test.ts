@@ -244,6 +244,34 @@ describe("Auto virtual model in a Pi session", () => {
 		assert.equal(chats[1].headers["x-github-api-version"], undefined);
 	});
 
+	test("offers one Auto model per tier and routes again on a tier switch", async () => {
+		harness = await startSession();
+		await harness.session.prompt("explain this");
+		const intelligence = harness.session.modelRuntime.getModel(
+			"github-copilot-auto",
+			"auto-intelligence",
+		);
+		assert.ok(intelligence, "auto-intelligence is not registered");
+		assert.ok(
+			harness.session.modelRuntime.getModel(
+				"github-copilot-auto",
+				"auto-efficiency",
+			),
+			"auto-efficiency is not registered",
+		);
+		await harness.session.setModel(intelligence);
+		await harness.session.prompt("and now this");
+
+		const tiers = harness
+			.routerCalls()
+			.map((call) => JSON.parse(String(call.init?.body)).tier);
+		assert.deepEqual(tiers, ["balance", "intelligence"]);
+		const chats = harness.chatCalls();
+		assert.equal(chats.length, 2);
+		for (const chat of chats)
+			assert.equal(chat.headers["copilot-session-token"], SAMPLE_SESSION_TOKEN);
+	});
+
 	test("ends the turn with an actionable error when there is no Copilot login", async () => {
 		harness = await startSession({ login: false });
 		await harness.session.prompt("explain this").catch(() => {});
