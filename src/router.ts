@@ -1,228 +1,168 @@
 /**
- * Model routing for the Auto pool.
+ * Model routing through GitHub's Auto endpoint.
  *
- * Asks GitHub's intent router (POST /models/session/intent) which pool model
- * fits the current prompt and falls back to the first supported pool model.
- * The protocol and cadence mirror microsoft/vscode-copilot-chat. Diff against
- * these when upgrading (verified at commit 5863f5a, October 2026):
- * - https://github.com/microsoft/vscode-copilot-chat/blob/main/src/platform/endpoint/node/routerDecisionFetcher.ts
- *   (request body, headers, 1 s timeout, RouterDecisionResponse)
- * - https://github.com/microsoft/vscode-copilot-chat/blob/main/src/platform/endpoint/node/automodeService.ts
- *   (once-per-conversation cadence, fallback reasons, vision fallback)
- * - https://www.npmjs.com/package/@vscode/copilot-api (0.5.2): RequestType.ModelRouter
- *   resolves to `${capiModelsURL}/session/intent`.
+ * POST /auto picks the model for the current prompt and mints the session
+ * token the chat request bills against, in a single call. The protocol and
+ * cadence mirror Copilot Chat in microsoft/vscode `extensions/copilot`. Diff
+ * against these when upgrading (verified November 2026):
+ * - src/platform/endpoint/node/autoV2Fetcher.ts at c9479adea7
+ *   (request body, 5 s timeout, AutoV2Response)
+ * - src/platform/endpoint/node/automodeService.ts at e54f253d94
+ *   (once-per-conversation cadence, re-route after compaction, reuse of the
+ *   last good route when /auto fails, vision check)
+ * - src/platform/endpoint/common/autoModeTiers.ts (tiers, `balance` default)
+ * - https://www.npmjs.com/package/@vscode/copilot-api (0.5.2): RequestType.Auto
+ *   resolves to `${capiBaseUrl}/auto`.
  *
  * Behaviour mirrored:
  *
- * - body `{ prompt, available_models, ...signals }`, authenticated with the
- *   Copilot token plus the Auto session token, abandoned after 1 s;
- * - the router is consulted on the first user prompt of a conversation and
- *   again after compaction; the decision then sticks for the conversation,
- *   kept in Pi's virtual-model router state so it survives resume and forks;
- * - image prompts, empty prompts, router failures, and candidates that are not
- *   both in the pool and in Pi's github-copilot catalog all fall back to the
- *   default route.
+ * - body `{ prompt, tier, has_image? }`, authenticated with the Copilot token,
+ *   abandoned after 5 s;
+ * - /auto is asked on the first user prompt of a conversation and again after
+ *   compaction; the route then sticks for the conversation. The picked model
+ *   is kept in Pi's router state, so it follows resume and forks;
+ * - the session token is bound to the picked model and lasts 24 h. It is kept
+ *   in memory only, never in router state, so the session file holds no
+ *   credential. A conversation without a live token (resumed in a new
+ *   process, or expired) asks /auto again;
+ * - when /auto fails, the conversation's last live route is reused; with none
+ *   there is no fallback, because Auto-only plans can serve nothing else.
  *
  * Only the latest user prompt is sent — never tool output or earlier turns.
- * Logs and diagnostics carry model ids, labels and HTTP statuses, never the
- * prompt text or any token.
+ * Logs and diagnostics carry model ids and HTTP statuses, never the prompt
+ * text or any token.
  */
 import { randomUUID } from "node:crypto";
 import type { Api, Message, Model } from "@earendil-works/pi-ai/compat";
 import type { ModelRouteReason } from "@earendil-works/pi-coding-agent";
-import { COPILOT_HEADERS, log } from "./config.ts";
-import { pickAutoModel, redactResponseBody } from "./helpers.ts";
-import { type RouterDecision, RouterDecisionSchema } from "./schemas.ts";
-import type { AutoSession } from "./session.ts";
+import { AUTO_TIER, COPILOT_HEADERS, log } from "./config.ts";
+import { redactResponseBody } from "./helpers.ts";
+import { AutoDecisionSchema } from "./schemas.ts";
 
-export const ROUTER_TIMEOUT_MS = 1000;
-
-/** Why the default route was used instead of a router pick. */
-export type FallbackReason =
-	| "image_prompt"
-	| "empty_prompt"
-	| "no_usable_candidate"
-	| "router_timeout"
-	| "router_error"
-	| "router_invalid_payload";
-
-export type RouteDecision =
-	| {
-			source: "router";
-			model: string;
-			label: string;
-			confidence: number | undefined;
-	  }
-	| {
-			source: "default";
-			model: string;
-			reason: FallbackReason;
-			detail?: string;
-	  };
-
-export function describeRouteDecision(decision: RouteDecision): string {
-	if (decision.source === "router") {
-		const confidence =
-			decision.confidence === undefined
-				? ""
-				: `, confidence ${decision.confidence.toFixed(2)}`;
-		return `${decision.model} via router (${decision.label}${confidence})`;
-	}
-	const detail = decision.detail ? ` ${decision.detail}` : "";
-	return `${decision.model} default (${decision.reason}${detail})`;
-}
+export const AUTO_TIMEOUT_MS = 5000;
+/** A token this close to expiry is not handed to a new request. */
+const EXPIRY_MARGIN_MS = 5 * 60 * 1000;
 
 export interface RoutingPrompt {
 	/** Trimmed text of the latest user message; empty when there is none. */
 	text: string;
 	hasImage: boolean;
-	/** 1-based count of user messages so far, VS Code's turn_number. */
-	turnNumber: number;
 }
 
 /** The latest user message is the prompt to route; earlier turns stay local. */
 export function routingPrompt(messages: readonly Message[]): RoutingPrompt {
-	let turnNumber = 0;
-	let latest: Extract<Message, { role: "user" }> | undefined;
-	for (const message of messages) {
-		if (message.role !== "user") continue;
-		turnNumber++;
-		latest = message;
-	}
-	if (!latest) return { text: "", hasImage: false, turnNumber };
+	const latest = messages.findLast((message) => message.role === "user");
+	if (!latest) return { text: "", hasImage: false };
 	if (typeof latest.content === "string")
-		return { text: latest.content.trim(), hasImage: false, turnNumber };
+		return { text: latest.content.trim(), hasImage: false };
 	const text = latest.content
 		.filter((part) => part.type === "text")
 		.map((part) => part.text)
 		.join("\n")
 		.trim();
 	const hasImage = latest.content.some((part) => part.type === "image");
-	return { text, hasImage, turnNumber };
+	return { text, hasImage };
 }
 
-/**
- * First router candidate that GitHub actually offered in this session's pool
- * and that Pi's github-copilot provider can serve. A candidate outside the pool is never used:
- * the session token is only valid for the pool it was issued for.
- */
-export function pickRoutedModel(
-	candidates: string[],
-	availableModels: string[],
-	supportedModelIds: Set<string>,
-): string | undefined {
-	const pool = new Set(availableModels);
-	return candidates.find((id) => pool.has(id) && supportedModelIds.has(id));
+/** One Auto session: the picked model and the token bound to it. */
+export interface AutoRoute {
+	model: string;
+	sessionToken: string;
+	expiresAtMs: number;
+	/** `selection_reason` from /auto, for diagnostics. */
+	reason?: string;
 }
 
-/** RoutingContextSignals in routerDecisionFetcher.ts. */
-export interface RoutingSignals {
-	turn_number?: number;
-	session_id?: string;
-	previous_model?: string;
-	prompt_char_count?: number;
+export function describeRoute(route: AutoRoute): string {
+	return route.reason ? `${route.model} (${route.reason})` : route.model;
 }
 
-export interface RouterRequest {
+export interface AutoRequest {
 	base: string;
 	copilotToken: string;
-	sessionToken: string;
-	availableModels: string[];
 	prompt: string;
-	signals: RoutingSignals;
+	hasImage: boolean;
+	tier?: string;
 	signal?: AbortSignal;
 	timeoutMs?: number;
 }
 
-export type RouterFetchResult =
-	| { ok: true; decision: RouterDecision }
-	| { ok: false; reason: FallbackReason; detail?: string };
-
 /**
- * One router round trip. Resolves to a fallback reason on any router-side
- * problem so the caller can continue with the default route; rethrows only
- * when the caller's own signal aborted, so cancellation never turns into a
- * fallback request.
+ * One /auto round trip. Throws an Error safe to show the user on any failure;
+ * when the caller's own signal aborted, rethrows that abort unchanged.
  */
-export async function fetchRouterDecision(
-	request: RouterRequest,
-): Promise<RouterFetchResult> {
-	const timeout = AbortSignal.timeout(request.timeoutMs ?? ROUTER_TIMEOUT_MS);
+export async function fetchAutoRoute(request: AutoRequest): Promise<AutoRoute> {
+	const timeout = AbortSignal.timeout(request.timeoutMs ?? AUTO_TIMEOUT_MS);
 	const signal = request.signal
 		? AbortSignal.any([request.signal, timeout])
 		: timeout;
+	const body: Record<string, unknown> = {
+		prompt: request.prompt,
+		tier: request.tier ?? AUTO_TIER,
+	};
+	if (request.hasImage) body.has_image = true;
 	let res: Response;
 	try {
-		res = await fetch(`${request.base}/models/session/intent`, {
+		res = await fetch(`${request.base}/auto`, {
 			method: "POST",
 			headers: {
 				Authorization: `Bearer ${request.copilotToken}`,
 				"Content-Type": "application/json",
-				"Copilot-Session-Token": request.sessionToken,
 				...COPILOT_HEADERS,
 			},
-			body: JSON.stringify({
-				prompt: request.prompt,
-				available_models: request.availableModels,
-				...request.signals,
-			}),
+			body: JSON.stringify(body),
 			signal,
 		});
 	} catch (error) {
 		if (request.signal?.aborted) throw error;
-		if (timeout.aborted) return { ok: false, reason: "router_timeout" };
-		return {
-			ok: false,
-			reason: "router_error",
-			detail: redactResponseBody(
-				error instanceof Error ? error.message : String(error),
-				120,
-			),
-		};
+		if (timeout.aborted)
+			throw new Error("Copilot Auto: /auto did not answer in time.");
+		const message = error instanceof Error ? error.message : String(error);
+		throw new Error(
+			`Copilot Auto: /auto failed: ${redactResponseBody(message, 120)}`,
+		);
 	}
 	if (!res.ok) {
-		const body = await res.text().catch(() => "");
-		return {
-			ok: false,
-			reason: "router_error",
-			detail: `${res.status}: ${redactResponseBody(body, 120)}`,
-		};
+		const text = await res.text().catch(() => "");
+		throw new Error(
+			`Copilot Auto: /auto ${res.status}: ${redactResponseBody(text, 120)}`,
+		);
 	}
-	const parsed = RouterDecisionSchema.safeParse(
+	const parsed = AutoDecisionSchema.safeParse(
 		await res.json().catch(() => undefined),
 	);
-	if (!parsed.success) return { ok: false, reason: "router_invalid_payload" };
-	return { ok: true, decision: parsed.data };
+	if (!parsed.success) throw new Error("Copilot Auto: invalid /auto payload.");
+	return {
+		model: parsed.data.selected_model.id,
+		sessionToken: parsed.data.session_token,
+		expiresAtMs: parsed.data.expires_at * 1000,
+		reason: parsed.data.selection_reason,
+	};
 }
 
 /** Router state Pi stores on the session branch (`ModelRoute.state`). */
 export interface AutoRouteState {
-	/** The conversation's route; it sticks until compaction or a pool change. */
-	decision: RouteDecision;
-	/** Random id sent as the router's session_id signal, one per conversation. */
+	/** The conversation's model; it sticks until compaction. */
+	model: string;
+	/** Random id keying this conversation's in-memory session token. */
 	conversationId: string;
 }
 
 export interface ResolveRouteInput {
 	base: string;
 	copilotToken: string;
-	session: AutoSession;
 	messages: readonly Message[];
 	/** Pi's github-copilot models the Auto model can route to, by id. */
 	known: Map<string, Model<Api>>;
 	reason: ModelRouteReason;
 	/** Router state Pi restored for this branch; absent for `direct` requests. */
 	state?: AutoRouteState;
-	/** github-copilot model id of the latest successful response, if any. */
-	previousModel?: string;
 	signal?: AbortSignal;
 }
 
 export interface ResolvedRoute {
-	/** Pool model that serves this request. */
 	model: string;
-	/** The conversation's route; absent for `direct` requests. */
-	decision?: RouteDecision;
+	sessionToken: string;
 	/** State for Pi to store; `input.state` itself when nothing changed. */
 	state?: AutoRouteState;
 }
@@ -232,22 +172,22 @@ export interface AutoRouterOptions {
 }
 
 /**
- * Routing policy for the Auto virtual model. The conversation's route lives
- * in Pi's router state; this instance only remembers, per process, that a
- * compaction asked for the next prompt to be routed again, matching VS
- * Code's once-per-conversation cadence.
+ * Routing policy for the Auto virtual model. The conversation's model lives
+ * in Pi's router state; this instance holds the session tokens, per process,
+ * and the request to route again after compaction.
  */
 export class AutoRouter {
+	readonly #sessions = new Map<string, AutoRoute>();
 	#rerouteRequested = false;
-	#last: RouteDecision | undefined;
+	#last: AutoRoute | undefined;
 	readonly #timeoutMs: number | undefined;
 
 	constructor(options: AutoRouterOptions = {}) {
 		this.#timeoutMs = options.timeoutMs;
 	}
 
-	/** Most recent decision made in this process, for diagnostics. */
-	get lastDecision(): RouteDecision | undefined {
+	/** Most recent route made in this process, for diagnostics. */
+	get lastRoute(): AutoRoute | undefined {
 		return this.#last;
 	}
 
@@ -261,119 +201,94 @@ export class AutoRouter {
 		this.#rerouteRequested = false;
 	}
 
-	/**
-	 * Decide which pool model serves this request. Returns undefined when the
-	 * pool holds nothing the Auto model can route to; the caller reports that.
-	 */
-	async resolve(input: ResolveRouteInput): Promise<ResolvedRoute | undefined> {
-		const { session, known, state } = input;
-		const supported = new Set(known.keys());
-		const pool = session.availableModels;
-		if (!pickAutoModel(pool, supported)) return undefined;
-		const usable = (id: string | undefined): id is string =>
-			id !== undefined && pool.includes(id) && supported.has(id);
+	/** Decide which model serves this request, and with which session token. */
+	async resolve(input: ResolveRouteInput): Promise<ResolvedRoute> {
+		const live = (route: AutoRoute | undefined): route is AutoRoute =>
+			route !== undefined && route.expiresAtMs - Date.now() > EXPIRY_MARGIN_MS;
 
 		// Requests outside the agent loop, such as compaction summaries, carry no
-		// state: stay on the model that answered last, else take the default.
+		// state: stay on the route that answered last.
 		if (input.reason === "direct") {
-			const model = usable(input.previousModel)
-				? input.previousModel
-				: this.#defaultModel(input, routingPrompt(input.messages), supported);
-			return { model };
+			if (live(this.#last))
+				return {
+					model: this.#last.model,
+					sessionToken: this.#last.sessionToken,
+				};
+			const route = await this.#route(input, undefined);
+			return { model: route.model, sessionToken: route.sessionToken };
 		}
 
+		const { state } = input;
+		const current = state
+			? this.#sessions.get(state.conversationId)
+			: undefined;
 		const rerouting = input.reason === "user" && this.#rerouteRequested;
-		if (state && usable(state.decision.model) && !rerouting)
-			return { model: state.decision.model, decision: state.decision, state };
+		if (state && live(current) && current.model === state.model && !rerouting)
+			return {
+				model: current.model,
+				sessionToken: current.sessionToken,
+				state,
+			};
 
 		const conversationId = state?.conversationId ?? randomUUID();
-		const decision = await this.#decide(
-			input,
-			routingPrompt(input.messages),
-			supported,
-			conversationId,
-		);
+		const route = await this.#route(input, live(current) ? current : undefined);
+		this.#sessions.set(conversationId, route);
 		this.#rerouteRequested = false;
-		this.#last = decision;
-		log(`route: ${describeRouteDecision(decision)}`);
 		return {
-			model: decision.model,
-			decision,
-			state: { decision, conversationId },
-		};
-	}
-
-	async #decide(
-		input: ResolveRouteInput,
-		prompt: RoutingPrompt,
-		supported: Set<string>,
-		conversationId: string,
-	): Promise<RouteDecision> {
-		const pool = input.session.availableModels;
-		const fallback = (
-			reason: FallbackReason,
-			detail?: string,
-		): RouteDecision => ({
-			source: "default",
-			model: this.#defaultModel(input, prompt, supported),
-			reason,
-			detail,
-		});
-
-		if (prompt.hasImage) return fallback("image_prompt");
-		if (!prompt.text) return fallback("empty_prompt");
-
-		const result = await fetchRouterDecision({
-			base: input.base,
-			copilotToken: input.copilotToken,
-			sessionToken: input.session.sessionToken,
-			availableModels: pool,
-			prompt: prompt.text,
-			signals: {
-				turn_number: prompt.turnNumber,
-				session_id: conversationId,
-				previous_model: input.state?.decision.model,
-				prompt_char_count: prompt.text.length,
-			},
-			signal: input.signal,
-			timeoutMs: this.#timeoutMs,
-		});
-		if (!result.ok) return fallback(result.reason, result.detail);
-
-		const model = pickRoutedModel(
-			result.decision.candidate_models,
-			pool,
-			supported,
-		);
-		if (!model) return fallback("no_usable_candidate");
-		return {
-			source: "router",
-			model,
-			label: result.decision.predicted_label,
-			confidence: result.decision.confidence,
+			model: route.model,
+			sessionToken: route.sessionToken,
+			state:
+				state?.model === route.model
+					? state
+					: { model: route.model, conversationId },
 		};
 	}
 
 	/**
-	 * First supported pool model; with an image attached, prefer the first
-	 * vision-capable one (VS Code's _applyVisionFallback).
+	 * Ask /auto for this prompt. `fallback` is the conversation's live route,
+	 * reused when /auto fails, as VS Code does.
 	 */
-	#defaultModel(
+	async #route(
 		input: ResolveRouteInput,
-		prompt: RoutingPrompt,
-		supported: Set<string>,
-	): string {
-		const pool = input.session.availableModels;
-		if (prompt.hasImage) {
-			const vision = new Set(
-				[...input.known.values()]
-					.filter((model) => model.input.includes("image"))
-					.map((model) => model.id),
-			);
-			const visionPick = pickAutoModel(pool, vision);
-			if (visionPick) return visionPick;
+		fallback: AutoRoute | undefined,
+	): Promise<AutoRoute> {
+		const prompt = routingPrompt(input.messages);
+		let route: AutoRoute;
+		try {
+			if (!prompt.text)
+				throw new Error("Copilot Auto: there is no prompt text to route.");
+			route = await fetchAutoRoute({
+				base: input.base,
+				copilotToken: input.copilotToken,
+				prompt: prompt.text,
+				hasImage: prompt.hasImage,
+				signal: input.signal,
+				timeoutMs: this.#timeoutMs,
+			});
+		} catch (error) {
+			if (input.signal?.aborted) throw error;
+			const message = error instanceof Error ? error.message : String(error);
+			if (!fallback) {
+				log(`route failed: ${message}`);
+				throw error;
+			}
+			log(`route kept ${fallback.model}: ${message}`);
+			return fallback;
 		}
-		// resolve() already verified the pool has a supported model.
-		return pickAutoModel(pool, supported) as string;
+
+		const model = input.known.get(route.model);
+		if (!model)
+			throw new Error(
+				`Copilot Auto picked ${route.model}, which Pi's github-copilot provider does not list for your login. Run \`pi update\` to refresh Pi's model catalog.`,
+			);
+		// The server filters on has_image, but sending an image to a text-only
+		// model is the client's to prevent.
+		if (prompt.hasImage && !model.input.includes("image"))
+			throw new Error(
+				`Copilot Auto picked ${route.model}, which does not accept images.`,
+			);
+		this.#last = route;
+		log(`route: ${describeRoute(route)}`);
+		return route;
 	}
 }

@@ -6,39 +6,7 @@
  */
 import assert from "node:assert/strict";
 import { describe, test } from "node:test";
-import { pickAutoModel, redactResponseBody } from "../src/helpers.ts";
-
-describe("pickAutoModel", () => {
-	const known = new Set([
-		"claude-sonnet-4.6",
-		"gpt-5.4",
-		"gpt-5.3-codex",
-		"gpt-5-mini",
-	]);
-
-	test("preserves GitHub's pool order across supported API families", () => {
-		assert.equal(
-			pickAutoModel(["claude-sonnet-4.6", "gpt-5.4", "gpt-5-mini"], known),
-			"claude-sonnet-4.6",
-		);
-		assert.equal(pickAutoModel(["gpt-5-mini", "gpt-5.4"], known), "gpt-5-mini");
-	});
-
-	test("skips pool entries Pi does not know", () => {
-		assert.equal(
-			pickAutoModel(["gemini-3.5-flash", "gpt-5.4"], known),
-			"gpt-5.4",
-		);
-	});
-
-	test("returns undefined when nothing in the pool is known", () => {
-		assert.equal(
-			pickAutoModel(["gemini-3.5-flash", "kimi-k3"], known),
-			undefined,
-		);
-		assert.equal(pickAutoModel([], known), undefined);
-	});
-});
+import { redactResponseBody } from "../src/helpers.ts";
 
 describe("redactResponseBody", () => {
 	test("passes an ordinary error body through untouched", () => {

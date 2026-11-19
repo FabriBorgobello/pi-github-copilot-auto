@@ -23,6 +23,7 @@ import {
 	VIRTUAL_MODEL_STATE_ENTRY,
 } from "@earendil-works/pi-coding-agent";
 import {
+	autoPayload,
 	EXPECTED_API_BASE,
 	type FetchStub,
 	jsonResponse,
@@ -33,7 +34,6 @@ import {
 	sseResponse,
 	stubFetch,
 	textResponse,
-	uncacheableSessionPayload,
 } from "./harness.ts";
 
 // Must precede the imports below: config.ts resolves its log path at module init.
@@ -41,11 +41,9 @@ const home = redirectAgentDir();
 const { default: extension } = await import("../src/index.ts");
 const { COPILOT_API_VERSION } = await import("../src/config.ts");
 
-// openai-completions models keep the stubbed stream short. The router's pick
-// is second in pool order, so it is distinguishable from the default route.
-const DEFAULT_MODEL = "gemini-3.8-flash";
+// openai-completions models keep the stubbed stream short.
 const ROUTED_MODEL = "kimi-k3";
-const POOL = [DEFAULT_MODEL, ROUTED_MODEL];
+const OTHER_MODEL = "gemini-3.8-flash";
 
 function chatCompletion(text: string): Response {
 	const chunk = (body: unknown) => `data: ${JSON.stringify(body)}\n\n`;
@@ -86,14 +84,8 @@ async function startSession({
 	const fetchStub = stubFetch((call) => {
 		const custom = route(call);
 		if (custom) return custom;
-		if (call.url.endsWith("/models/session/intent"))
-			return jsonResponse({
-				predicted_label: "needs_reasoning",
-				confidence: 0.9,
-				candidate_models: [ROUTED_MODEL],
-			});
-		if (call.url.endsWith("/models/session"))
-			return jsonResponse(uncacheableSessionPayload(POOL));
+		if (call.url.endsWith("/auto"))
+			return jsonResponse(autoPayload(ROUTED_MODEL));
 		if (call.url.endsWith("/chat/completions")) return chatCompletion("hello");
 		return textResponse(`unexpected ${call.url}`, 404);
 	});
@@ -133,7 +125,7 @@ async function startSession({
 		session,
 		fetchStub,
 		chatCalls: calls("/chat/completions"),
-		routerCalls: calls("/models/session/intent"),
+		routerCalls: calls("/auto"),
 	};
 }
 
@@ -196,29 +188,25 @@ describe("Auto virtual model in a Pi session", () => {
 		assert.equal(states.length, 1);
 		const [entry] = states;
 		assert.ok(entry.type === "custom");
-		const data = entry.data as {
-			state: { decision: { model: string; source: string } };
-		};
-		assert.equal(data.state.decision.model, ROUTED_MODEL);
-		assert.equal(data.state.decision.source, "router");
+		const data = entry.data as { state: { model: string } };
+		assert.equal(data.state.model, ROUTED_MODEL);
+		// The session token is a credential; it never reaches the session file.
+		assert.ok(!JSON.stringify(entry).includes(SAMPLE_SESSION_TOKEN));
 	});
 
-	test("falls back to the first pool model when the router fails", async () => {
+	test("ends the turn with the /auto error when Auto cannot route", async () => {
 		harness = await startSession({
 			route: (call) =>
-				call.url.endsWith("/models/session/intent")
-					? textResponse("not enabled", 404)
+				call.url.endsWith("/auto")
+					? textResponse("unavailable", 503)
 					: undefined,
 		});
-		await harness.session.prompt("explain this");
+		await harness.session.prompt("explain this").catch(() => {});
 
 		const message = lastAssistant(harness.session);
-		assert.equal(message.stopReason, "stop", message.errorMessage ?? "");
-		assert.equal(message.model, DEFAULT_MODEL);
-		assert.equal(
-			harness.chatCalls()[0]?.headers["copilot-session-token"],
-			SAMPLE_SESSION_TOKEN,
-		);
+		assert.equal(message.stopReason, "error");
+		assert.match(message.errorMessage ?? "", /\/auto 503: unavailable/);
+		assert.equal(harness.chatCalls().length, 0);
 	});
 
 	test("routes again on the prompt after a compaction", async () => {
@@ -240,7 +228,7 @@ describe("Auto virtual model in a Pi session", () => {
 		await harness.session.prompt("explain this");
 		const direct = harness.session.modelRuntime.getModel(
 			"github-copilot",
-			DEFAULT_MODEL,
+			OTHER_MODEL,
 		);
 		assert.ok(direct);
 		await harness.session.setModel(direct);

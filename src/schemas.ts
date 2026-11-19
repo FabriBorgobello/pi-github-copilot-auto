@@ -1,29 +1,20 @@
 /**
- * Zod schemas for the untrusted JSON payloads this extension parses:
- * the Auto session and the intent router's decision.
+ * Zod schemas for the untrusted JSON payloads this extension parses.
  * `.parse()` replaces the hand-rolled typeof / Array.isArray guards.
  */
 import { z } from "zod";
 
-/** POST /models/session */
-export const AutoSessionSchema = z.object({
-	session_token: z.string(),
-	available_models: z.array(z.string()),
-	discounted_costs: z.record(z.string(), z.number()).default({}),
-	expires_at: z.number().optional(), // seconds epoch
-});
-
 /**
- * POST /models/session/intent — GitHub's intent router. Shape taken from
- * RouterDecisionResponse in
- * https://github.com/microsoft/vscode-copilot-chat/blob/main/src/platform/endpoint/node/routerDecisionFetcher.ts
- * `latency_ms` and `scores` are ignored; `predicted_label` is kept as a free
- * string so a new label does not invalidate the whole decision.
+ * POST /auto — GitHub's single-call Auto endpoint. Shape taken from
+ * AutoV2Response in microsoft/vscode extensions/copilot
+ * src/platform/endpoint/node/autoV2Fetcher.ts. Only the fields the extension
+ * reads are kept; `selection_reason` stays a free string so a new value does
+ * not invalidate the whole decision.
  */
-export const RouterDecisionSchema = z.object({
-	predicted_label: z.string(),
-	confidence: z.number().optional(),
-	candidate_models: z.array(z.string()),
-	sticky_override: z.boolean().optional(),
+export const AutoDecisionSchema = z.object({
+	session_token: z.string(),
+	expires_at: z.number(), // seconds epoch; the token lasts 24 h, no refresh
+	selected_model: z.object({ id: z.string() }),
+	selection_reason: z.string().optional(),
 });
-export type RouterDecision = z.infer<typeof RouterDecisionSchema>;
+export type AutoDecisionPayload = z.infer<typeof AutoDecisionSchema>;

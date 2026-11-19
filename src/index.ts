@@ -2,9 +2,9 @@
  * GitHub Copilot Auto — Pi virtual model extension
  *
  * Adds a `github-copilot-auto/auto` virtual model that uses GitHub Copilot's
- * server-side Auto routing: the Auto session's model pool, the intent
- * router's pick for the conversation, and the `Copilot-Session-Token`
- * returned by POST /models/session on chat requests.
+ * server-side Auto routing: POST /auto picks the model for the
+ * conversation and mints the `Copilot-Session-Token` sent on its chat
+ * requests.
  *
  * Each request is routed to one of Pi's built-in github-copilot models, so Pi
  * owns the login, token refresh, streaming, cost and context limits, and
@@ -21,13 +21,11 @@ import { copilotModels, getCopilotAuth } from "./auth.ts";
 import {
 	AUTO_MODEL_ID,
 	COPILOT_API_VERSION,
-	COPILOT_PROVIDER_ID,
 	log,
 	PROVIDER_ID,
 } from "./config.ts";
 import { runDoctor } from "./doctor.ts";
 import { AutoRouter, type AutoRouteState } from "./router.ts";
-import { getAutoSession } from "./session.ts";
 
 const SESSION_TOKEN_HEADER = "Copilot-Session-Token";
 
@@ -37,7 +35,7 @@ function isAutoModel(model: { provider: string; id: string } | undefined) {
 
 export default function (pi: ExtensionAPI) {
 	const router = new AutoRouter();
-	// Session token of the Auto session the latest route came from. Every
+	// Session token of the latest route. Every
 	// request Pi makes while Auto is selected is routed through route() first,
 	// though not always immediately before its headers: threshold compaction
 	// can run its own routed request in between. So the token is kept for as
@@ -105,34 +103,24 @@ export default function (pi: ExtensionAPI) {
 		async route(request, ctx) {
 			const registry = ctx.modelRegistry;
 			const { token, apiBase } = await getCopilotAuth(registry);
-			const auto = await getAutoSession(apiBase, token, request.signal);
 			const known = copilotModels(registry);
-			const previous = request.previous?.model;
 			const route = await router.resolve({
 				base: apiBase,
 				copilotToken: token,
-				session: auto,
 				messages: request.messages,
 				known,
 				reason: request.reason,
 				state: request.state,
-				previousModel:
-					previous?.provider === COPILOT_PROVIDER_ID ? previous.id : undefined,
 				signal: request.signal,
 			});
-			if (!route) {
-				throw new Error(
-					`Copilot Auto: no model in the Auto pool is available to your GitHub Copilot login in Pi. Pool: [${auto.availableModels.join(", ")}]`,
-				);
-			}
-			// resolve() only returns ids from the pool ∩ known.
+			// resolve() only returns models in `known`.
 			const model = known.get(route.model);
 			if (!model) {
 				throw new Error(
 					`Copilot Auto: selected model ${route.model} is missing from Pi's catalog.`,
 				);
 			}
-			sessionToken = auto.sessionToken;
+			sessionToken = route.sessionToken;
 			return {
 				model,
 				thinkingLevel: request.thinkingLevel,

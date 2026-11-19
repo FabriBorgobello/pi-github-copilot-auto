@@ -103,15 +103,17 @@ export function sseResponse(body: string): Response {
 	});
 }
 
-const NOW_SECONDS = () => Math.floor(Date.now() / 1000);
-
-/** An Auto session payload too near expiry to be cached. */
-export function uncacheableSessionPayload(availableModels: string[]) {
+/** A POST /auto answer picking `model`, valid for the usual 24 hours. */
+export function autoPayload(
+	model: string,
+	sessionToken = SAMPLE_SESSION_TOKEN,
+) {
 	return {
-		session_token: SAMPLE_SESSION_TOKEN,
-		available_models: availableModels,
-		discounted_costs: {},
-		expires_at: NOW_SECONDS(),
+		session_token: sessionToken,
+		expires_at: Math.floor(Date.now() / 1000) + 24 * 60 * 60,
+		selected_model: { id: model, name: model, capabilities: {} },
+		selection_reason: `Auto selected ${model}.`,
+		hydra_scores: { reasoning: 0.1 },
 	};
 }
 

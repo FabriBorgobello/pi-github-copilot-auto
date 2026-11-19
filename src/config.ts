@@ -7,12 +7,19 @@ import { join } from "node:path";
 
 export const PROVIDER_ID = "github-copilot-auto";
 export const AUTO_MODEL_ID = "auto";
+/**
+ * Routing profile sent to POST /auto: efficiency, balance, intelligence or
+ * fast. `balance` is VS Code's default (autoModeTiers.ts).
+ */
+export const AUTO_TIER = "balance";
 /** Pi's built-in provider whose models and login the Auto model routes to. */
 export const COPILOT_PROVIDER_ID = "github-copilot";
-export const COPILOT_API_VERSION = "2026-06-01";
+// The version @vscode/copilot-api 0.5.2 sends on every Copilot API request.
+// Copilot ignores the Auto session token on a chat request without one.
+export const COPILOT_API_VERSION = "2026-08-01";
 
 // Same client identity the built-in github-copilot provider sends. Copilot-Integration-Id
-// is the gate for the /models/session endpoints; reuse the value that already works for chat.
+// is the gate for the Auto endpoint; reuse the value that already works for chat.
 export const COPILOT_HEADERS: Record<string, string> = {
 	"User-Agent": "GitHubCopilotChat/0.35.0",
 	"Editor-Version": "vscode/1.107.0",
