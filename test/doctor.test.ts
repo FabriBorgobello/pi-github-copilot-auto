@@ -2,38 +2,36 @@
  * /copilot-auto-doctor — the report users paste into an issue.
  *
  * It is glue over the tested pieces, so the contract asserted here is that the
- * report resolves the whole chain and prints no credential.
+ * report resolves the whole chain, routes only its fixed prompt, and prints
+ * no credential.
  */
 import assert from "node:assert/strict";
 import { describe, test } from "node:test";
 import {
+	autoPayload,
 	EXPECTED_API_BASE,
 	fakeRegistry,
 	jsonResponse,
 	redirectAgentDir,
 	SAMPLE_COPILOT_TOKEN,
 	SAMPLE_SESSION_TOKEN,
-	type StubbedCall,
 	stubFetch,
 	textResponse,
-	uncacheableSessionPayload,
 } from "./harness.ts";
 
 // Must precede the imports below: config.ts resolves its log path at module init.
 redirectAgentDir();
-const { runDoctor } = await import("../src/doctor.ts");
+const { DOCTOR_PROMPT, runDoctor } = await import("../src/doctor.ts");
 const { copilotModels } = await import("../src/auth.ts");
 const { AutoRouter } = await import("../src/router.ts");
 
 describe("runDoctor", () => {
-	test("reports the resolved route without printing any credential", async () => {
+	test("reports /auto's pick for a fixed prompt without printing any credential", async () => {
 		const registry = await fakeRegistry();
 		const [target] = copilotModels(registry).keys();
 		assert.ok(target, "Pi's github-copilot catalog is empty");
 
-		const fetchStub = stubFetch(() =>
-			jsonResponse(uncacheableSessionPayload([target, "unknown-model"])),
-		);
+		const fetchStub = stubFetch(() => jsonResponse(autoPayload(target)));
 		try {
 			const report = await runDoctor(registry);
 
@@ -41,20 +39,21 @@ describe("runDoctor", () => {
 			assert.ok(report.includes(`API base: ${EXPECTED_API_BASE}`));
 			assert.ok(
 				report.includes(
-					`Default route (first available pool model): ${target}`,
+					`Auto endpoint: ${EXPECTED_API_BASE}/auto (tier balance)`,
 				),
 			);
-			assert.ok(report.includes("Auto pool returned by GitHub: 2"));
-			assert.ok(report.includes("Pi-available matches in pool: 1"));
 			assert.ok(
 				report.includes(
-					`Router endpoint: ${EXPECTED_API_BASE}/models/session/intent`,
+					`Auto pick for a test prompt: ${target} (Auto selected ${target}.), available in Pi`,
 				),
+				report,
 			);
-			assert.match(report, /Last router outcome: none yet/);
-			// Doctor never routes a prompt: the session open only.
+			assert.match(report, /Last route: none yet/);
 			assert.equal(fetchStub.calls.length, 1);
-			assert.ok(fetchStub.calls[0].url.endsWith("/models/session"));
+			assert.equal(
+				JSON.parse(String(fetchStub.calls[0].init?.body)).prompt,
+				DOCTOR_PROMPT,
+			);
 
 			for (const secret of [SAMPLE_COPILOT_TOKEN, SAMPLE_SESSION_TOKEN])
 				assert.ok(
@@ -66,49 +65,52 @@ describe("runDoctor", () => {
 		}
 	});
 
-	test("reports the last router outcome held in memory, without a new request", async () => {
+	test("flags a pick Pi does not know", async () => {
+		const fetchStub = stubFetch(() => jsonResponse(autoPayload("brand-new")));
+		try {
+			const report = await runDoctor(await fakeRegistry());
+			assert.match(report, /brand-new .*NOT available in Pi; run `pi update`/);
+		} finally {
+			fetchStub.restore();
+		}
+	});
+
+	test("reports an /auto failure instead of failing the whole report", async () => {
+		const fetchStub = stubFetch(() => textResponse("not enabled", 404));
+		try {
+			const report = await runDoctor(await fakeRegistry());
+			assert.match(
+				report,
+				/Auto pick for a test prompt: failed: Copilot Auto: \/auto 404: not enabled/,
+			);
+		} finally {
+			fetchStub.restore();
+		}
+	});
+
+	test("reports the last route held in memory", async () => {
 		const registry = await fakeRegistry();
 		const known = copilotModels(registry);
 		const [target] = known.keys();
-		const fetchStub = stubFetch((call: StubbedCall) => {
-			if (call.url.endsWith("/models/session/intent"))
-				return jsonResponse({
-					predicted_label: "needs_reasoning",
-					confidence: 0.9,
-					candidate_models: [target],
-				});
-			if (call.url.endsWith("/models/session"))
-				return jsonResponse(uncacheableSessionPayload([target]));
-			return textResponse("unexpected", 404);
-		});
+		const fetchStub = stubFetch(() => jsonResponse(autoPayload(target)));
 		try {
-			// A routed request earlier in the process leaves its decision behind.
 			const router = new AutoRouter();
 			await router.resolve({
 				base: EXPECTED_API_BASE,
 				copilotToken: SAMPLE_COPILOT_TOKEN,
-				session: {
-					sessionToken: SAMPLE_SESSION_TOKEN,
-					availableModels: [target],
-					discountedCosts: {},
-					expiresAtMs: Date.now() + 60_000,
-				},
 				messages: [{ role: "user", content: "hi", timestamp: Date.now() }],
 				known,
 				reason: "user",
 			});
-			const routerCalls = fetchStub.calls.length;
 
 			const report = await runDoctor(registry, router);
 
 			assert.ok(
 				report.includes(
-					`Last router outcome: ${target} via router (needs_reasoning, confidence 0.90)`,
+					`Last route: ${target} (Auto selected ${target}.), tier balance`,
 				),
 				report,
 			);
-			// Session open only; the doctor itself never routes.
-			assert.equal(fetchStub.calls.length - routerCalls, 1);
 			assert.ok(!report.includes(SAMPLE_SESSION_TOKEN));
 		} finally {
 			fetchStub.restore();

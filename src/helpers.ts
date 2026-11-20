@@ -3,17 +3,6 @@
  */
 
 /**
- * Default route: the first Auto-pool model, in GitHub's pool order, that the
- * Auto model can route to. Used when the intent router is skipped or fails.
- */
-export function pickAutoModel(
-	availableModels: string[],
-	supportedModelIds: Set<string>,
-): string | undefined {
-	return availableModels.find((id) => supportedModelIds.has(id));
-}
-
-/**
  * Provider error bodies are echoed into user-visible error messages, and an
  * auth failure is exactly where a credential could appear in one. Redact
  * known token shapes and cap the length before surfacing a body.
