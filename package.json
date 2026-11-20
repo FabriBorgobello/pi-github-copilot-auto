@@ -68,6 +68,6 @@
 		"zod": "^4.6.7"
 	},
 	"lint-staged": {
-		"*.{js,mjs,cjs,ts,mts,cts,json}": "biome check --write"
+		"*.{js,mjs,cjs,ts,mts,cts,json,md}": "biome check --write --no-errors-on-unmatched"
 	}
 }
