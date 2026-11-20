@@ -1,3 +1,16 @@
+# [0.5.0](https://github.com/FabriBorgobello/pi-github-copilot-auto/compare/v0.4.2...v0.5.0) (2026-11-20)
+
+
+### Bug Fixes
+
+* route again when a kept model cannot take the prompt's images ([50ee9a1](https://github.com/FabriBorgobello/pi-github-copilot-auto/commit/50ee9a1f81103e764a1972fa0a2ccbb925a01faf))
+
+
+### Features
+
+* add efficiency and intelligence Auto tiers ([d22833e](https://github.com/FabriBorgobello/pi-github-copilot-auto/commit/d22833e734ebfd58cd741106d25482d65ce837f0))
+* route through Copilot's single-call /auto endpoint ([a1bd621](https://github.com/FabriBorgobello/pi-github-copilot-auto/commit/a1bd6219acf9d01b99a93eeb24f9496e87da826e))
+
 ## [0.4.2](https://github.com/FabriBorgobello/pi-github-copilot-auto/compare/v0.4.1...v0.4.2) (2026-11-19)
 
 
